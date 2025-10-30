@@ -68,44 +68,42 @@ struct limitfs_dirp {
  * different values on the command line.
  */
 static struct options {
-  int usage_limit;
-  int show_help;
-  int show_version;
+	int usage_limit;
+	int show_help;
+	int show_version;
 } options;
 
 static struct mountpoint {
-  int fd;
-  struct limitfs_dirp *dir;
-  char *path;
+	int fd;
+	struct limitfs_dirp *dir;
+	char *path;
 } mountpoint;
 
-#define OPTION(t, p)                           \
-    { t, offsetof(struct options, p), 1 }
+#define OPTION(t, p) { t, offsetof(struct options, p), 1 }
 static const struct fuse_opt option_spec[] = {
-        OPTION("--usage-limit=%d", usage_limit),
-        OPTION("-h", show_help),
-        OPTION("--help", show_help),
+	OPTION("--usage-limit=%d", usage_limit),
+	OPTION("-h", show_help),
+	OPTION("--help", show_help),
 	OPTION("-V", show_version),
-        OPTION("--version", show_version),
-        FUSE_OPT_END
+	OPTION("--version", show_version),
+	FUSE_OPT_END
 };
 
 #ifdef FUSE3
-static void *limitfs_init(struct fuse_conn_info *conn,
-		      struct fuse_config *cfg)
+static void *limitfs_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 {
 	(void) conn;
-	
+
 	cfg->use_ino = 1;
 	cfg->nullpath_ok = 1;
 
 	/* Pick up changes from lower filesystem right away. This is
-	   also necessary for better hardlink support. When the kernel
-	   calls the unlink() handler, it does not know the inode of
-	   the to-be-removed entry and can therefore not invalidate
-	   the cache of the associated inode - resulting in an
-	   incorrect st_nlink value being reported for any remaining
-	   hardlinks to this inode. */
+		also necessary for better hardlink support. When the kernel
+		calls the unlink() handler, it does not know the inode of
+		the to-be-removed entry and can therefore not invalidate
+		the cache of the associated inode - resulting in an
+		incorrect st_nlink value being reported for any remaining
+		hardlinks to this inode. */
 	cfg->entry_timeout = 0;
 	cfg->attr_timeout = 0;
 	cfg->negative_timeout = 0;
@@ -114,12 +112,11 @@ static void *limitfs_init(struct fuse_conn_info *conn,
 }
 #endif
 
-static int limitfs_getattr_fuse3(const char *path, struct stat *stbuf,
-			struct fuse_file_info *fi)
+static int limitfs_getattr_fuse3(const char *path, struct stat *stbuf, struct fuse_file_info *fi)
 {
 	int res;
 	(void) path;
-	
+
 	if(fi)
 		res = fstat(fi->fh, stbuf);
 	else {
@@ -128,27 +125,27 @@ static int limitfs_getattr_fuse3(const char *path, struct stat *stbuf,
 
 		strcpy(relative_path, ".");
 		strcat(relative_path, path);
-		
+
 		res = fstatat(mountpoint.fd, relative_path, stbuf, AT_SYMLINK_NOFOLLOW);
 
 	}
 	if (res == -1)
 		return -errno;
-	
-	
+
+
 	return 0;
 }
 
 static int limitfs_access(const char *path, int mask)
 {
-        int res;
+	int res;
 
-	char relative_path[ strlen(path) + 1];	
+	char relative_path[ strlen(path) + 1];
 	strcpy(relative_path, ".");
 	strcat(relative_path, path);
-	
+
 	res = faccessat(mountpoint.fd, relative_path, mask, AT_EACCESS);
-	
+
 	if (res == -1)
 		return -errno;
 
@@ -158,10 +155,10 @@ static int limitfs_access(const char *path, int mask)
 static int limitfs_readlink(const char *path, char *buf, size_t size)
 {
 	int res;
-	char relative_path[ strlen(path) + 1];	
+	char relative_path[ strlen(path) + 1];
 	strcpy(relative_path, ".");
 	strcat(relative_path, path);
-	
+
 	res = readlinkat(mountpoint.fd, relative_path, buf, size - 1);
 	if (res == -1)
 		return -errno;
@@ -172,46 +169,43 @@ static int limitfs_readlink(const char *path, char *buf, size_t size)
 
 
 /* Relative to DIR_FD, open the directory DIR, passing EXTRA_FLAGS to
-   the underlying openat call.  On success, store into *PNEW_FD the
-   underlying file descriptor of the newly opened directory and return
-   the directory stream.  On failure, return NULL and set errno.
-   On success, *PNEW_FD is at least 3, so this is a "safer" function.  */
+	the underlying openat call.  On success, store into *PNEW_FD the
+	underlying file descriptor of the newly opened directory and return
+	the directory stream.  On failure, return NULL and set errno.
+	On success, *PNEW_FD is at least 3, so this is a "safer" function.  */
 
 DIR *opendirat(int dir_fd, char const *path, int extra_flags) {
-  int open_flags = (O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOCTTY
-                    | O_NONBLOCK | extra_flags);
+	int open_flags = (O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOCTTY | O_NONBLOCK | extra_flags);
 
+	char relative_path[ strlen(path) + 1];
 
-  char relative_path[ strlen(path) + 1];
+	strcpy(relative_path, ".");
+	strcat(relative_path, path);
 
-  strcpy(relative_path, ".");
-  strcat(relative_path, path);
-  
-  int new_fd = openat (dir_fd, relative_path, open_flags);
-  
-  if (new_fd < 0)
-    return NULL;
-  DIR *dirp = fdopendir (new_fd);
-  if (!dirp)
-    {
-      int fdopendir_errno = errno;
-      close (new_fd);
-      errno = fdopendir_errno;
-    }
-  return dirp;
+	int new_fd = openat (dir_fd, relative_path, open_flags);
+
+	if (new_fd < 0)
+		return NULL;
+	DIR *dirp = fdopendir (new_fd);
+	if (!dirp) {
+		int fdopendir_errno = errno;
+		close (new_fd);
+		errno = fdopendir_errno;
+	}
+	return dirp;
 }
 
 static int limitfs_opendir(const char *path, struct fuse_file_info *fi)
 {
 	int res;
-	
+
 	if (strcmp(path, "/") == 0) {
 
 		if (mountpoint.dir == NULL) {
 			res = -errno;
 			return res;
 		}
-		
+
 		fi->fh = (unsigned long) mountpoint.dir;
 		return 0;
 	}
@@ -221,8 +215,8 @@ static int limitfs_opendir(const char *path, struct fuse_file_info *fi)
 		return -ENOMEM;
 	/*
 	d->dp = opendir(path);
-        */
-	
+	*/
+
 	d->dp = opendirat(mountpoint.fd, path, 0);
 	if (d->dp == NULL) {
 		res = -errno;
@@ -243,18 +237,17 @@ static inline struct limitfs_dirp *get_dirp(struct fuse_file_info *fi)
 
 #ifdef FUSE3
 static int limitfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
-		       off_t offset, struct fuse_file_info *fi,
-		       enum fuse_readdir_flags flags)
+		off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags)
 {
 	struct limitfs_dirp *d = get_dirp(fi);
-	
+
 	(void) path;
 	if (offset != d->offset) {
 #ifndef __FreeBSD__
 		seekdir(d->dp, offset);
 #else
 		/* Subtract the one that we add when calling
-		   telldir() below */
+			telldir() below */
 		seekdir(d->dp, offset-1);
 #endif
 		d->entry = NULL;
@@ -264,7 +257,7 @@ static int limitfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		struct stat st;
 		off_t nextoff;
 		enum fuse_fill_dir_flags fill_flags = 0;
-		
+
 		if (!d->entry) {
 			d->entry = readdir(d->dp);
 			if (!d->entry)
@@ -274,8 +267,7 @@ static int limitfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		if (flags & FUSE_READDIR_PLUS) {
 			int res;
 
-			res = fstatat(dirfd(d->dp), d->entry->d_name, &st,
-				      AT_SYMLINK_NOFOLLOW);
+			res = fstatat(dirfd(d->dp), d->entry->d_name, &st, AT_SYMLINK_NOFOLLOW);
 			if (res != -1)
 				fill_flags |= FUSE_FILL_DIR_PLUS;
 		}
@@ -286,11 +278,11 @@ static int limitfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 			st.st_mode = d->entry->d_type << 12;
 		}
 		nextoff = telldir(d->dp);
-#ifdef __FreeBSD__		
+#ifdef __FreeBSD__
 		/* Under FreeBSD, telldir() may return 0 the first time
-		   it is called. But for libfuse, an offset of zero
-		   means that offsets are not supported, so we shift
-		   everything by one. */
+			it is called. But for libfuse, an offset of zero
+			means that offsets are not supported, so we shift
+			everything by one. */
 		nextoff++;
 #endif
 		if (filler(buf, d->entry->d_name, &st, nextoff, fill_flags))
@@ -305,18 +297,17 @@ static int limitfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 #endif
 
 #ifdef FUSE2
-static int limitfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
-		       off_t offset, struct fuse_file_info *fi)
+static int limitfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
 {
 	struct limitfs_dirp *d = get_dirp(fi);
-	
+
 	(void) path;
 	if (offset != d->offset) {
 #ifndef __FreeBSD__
 		seekdir(d->dp, offset);
 #else
 		/* Subtract the one that we add when calling
-		   telldir() below */
+			telldir() below */
 		seekdir(d->dp, offset-1);
 #endif
 		d->entry = NULL;
@@ -325,18 +316,18 @@ static int limitfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	while (1) {
 		struct stat st;
 		off_t nextoff;
-		
+
 		if (!d->entry) {
 			d->entry = readdir(d->dp);
 			if (!d->entry)
 				break;
 		}
 		nextoff = telldir(d->dp);
-#ifdef __FreeBSD__		
+#ifdef __FreeBSD__
 		/* Under FreeBSD, telldir() may return 0 the first time
-		   it is called. But for libfuse, an offset of zero
-		   means that offsets are not supported, so we shift
-		   everything by one. */
+			it is called. But for libfuse, an offset of zero
+			means that offsets are not supported, so we shift
+			everything by one. */
 		nextoff++;
 #endif
 		if (filler(buf, d->entry->d_name, &st, nextoff))
@@ -357,7 +348,7 @@ static int limitfs_releasedir(const char *path, struct fuse_file_info *fi)
 	if (d->dp == mountpoint.dir->dp) {
 		return 0;
 	}
-	
+
 	closedir(d->dp);
 	free(d);
 	return 0;
@@ -366,7 +357,7 @@ static int limitfs_releasedir(const char *path, struct fuse_file_info *fi)
 static int limitfs_mknod(const char *path, mode_t mode, dev_t rdev)
 {
 	int res;
-	
+
 	if (S_ISFIFO(mode))
 		res = mkfifo(path, mode);
 	else
@@ -383,7 +374,7 @@ static int limitfs_mkdir(const char *path, mode_t mode)
 	char relative_path[ strlen(path) + 1];
 	strcpy(relative_path, ".");
 	strcat(relative_path, path);
-	
+
 	res = mkdirat(mountpoint.fd, relative_path, mode);
 	if (res == -1)
 		return -errno;
@@ -394,8 +385,8 @@ static int limitfs_mkdir(const char *path, mode_t mode)
 static int limitfs_unlink(const char *path)
 {
 	int res;
-	
- 	char relative_path[ strlen(path) + 1];
+
+	 char relative_path[ strlen(path) + 1];
 	strcpy(relative_path, ".");
 	strcat(relative_path, path);
 
@@ -429,8 +420,7 @@ static int limitfs_symlink(const char *from, const char *to)
 	char relative_to[ strlen(to) + 1];
 	strcpy(relative_to, ".");
 	strcat(relative_to, to);
-	/*
-	  res = symlink(from, to); */
+	/* res = symlink(from, to); */
 	res = symlinkat(from, mountpoint.fd, relative_to);
 	if (res == -1)
 		return -errno;
@@ -448,11 +438,11 @@ static int limitfs_rename_fuse3(const char *from, const char *to, unsigned int f
 	char relative_to[ strlen(to) + 1];
 	strcpy(relative_to, ".");
 	strcat(relative_to, to);
-	
+
 	/* When we have renameat2() in libc, then we can implement flags */
 	if (flags)
 		return -EINVAL;
-	
+
 	res = renameat(mountpoint.fd, relative_from, mountpoint.fd, relative_to);
 	/* res = rename(from, to); */
 	if (res == -1)
@@ -464,7 +454,7 @@ static int limitfs_rename_fuse3(const char *from, const char *to, unsigned int f
 static int limitfs_link(const char *from, const char *to)
 {
 	int res;
-	
+
 	res = link(from, to);
 	if (res == -1)
 		return -errno;
@@ -472,11 +462,10 @@ static int limitfs_link(const char *from, const char *to)
 	return 0;
 }
 
-static int limitfs_chmod_fuse3(const char *path, mode_t mode,
-		     struct fuse_file_info *fi)
+static int limitfs_chmod_fuse3(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
 	int res;
-	
+
 	if(fi)
 		res = fchmod(fi->fh, mode);
 	else {
@@ -492,11 +481,10 @@ static int limitfs_chmod_fuse3(const char *path, mode_t mode,
 	return 0;
 }
 
-static int limitfs_chown_fuse3(const char *path, uid_t uid, gid_t gid,
-		     struct fuse_file_info *fi)
+static int limitfs_chown_fuse3(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi)
 {
 	int res;
-	
+
 	if (fi)
 		res = fchown(fi->fh, uid, gid);
 	else {
@@ -514,11 +502,10 @@ static int limitfs_chown_fuse3(const char *path, uid_t uid, gid_t gid,
 	return 0;
 }
 
-static int limitfs_truncate_fuse3(const char *path, off_t size,
-			 struct fuse_file_info *fi)
+static int limitfs_truncate_fuse3(const char *path, off_t size, struct fuse_file_info *fi)
 {
 	int res;
-	
+
 	if(fi)
 		res = ftruncate(fi->fh, size);
 	else
@@ -533,36 +520,35 @@ static int limitfs_truncate_fuse3(const char *path, off_t size,
 #ifdef FUSE2
 static int limitfs_getattr_fuse2(const char *path, struct stat *stbuf)
 {
-        return limitfs_getattr_fuse3(path, stbuf, false);
+	return limitfs_getattr_fuse3(path, stbuf, false);
 }
 
 static int limitfs_rename_fuse2(const char *from, const char *to)
 {
-        return limitfs_rename_fuse3(from, to, 0);
+	return limitfs_rename_fuse3(from, to, 0);
 }
 
 static int limitfs_chmod_fuse2(const char *path, mode_t mode)
 {
-        return limitfs_chmod_fuse3(path, mode, false);
+	return limitfs_chmod_fuse3(path, mode, false);
 }
 
 static int limitfs_chown_fuse2(const char *path, uid_t uid, gid_t gid)
 {
-        return limitfs_chown_fuse3(path, uid, gid, false);
+	return limitfs_chown_fuse3(path, uid, gid, false);
 }
 
 static int limitfs_truncate_fuse2(const char *path, off_t size)
 {
-        return limitfs_truncate_fuse3(path, size, false);
+	return limitfs_truncate_fuse3(path, size, false);
 }
 #endif
 
 #ifdef HAVE_UTIMENSAT
-static int limitfs_utimens(const char *path, const struct timespec ts[2],
-		       struct fuse_file_info *fi)
+static int limitfs_utimens(const char *path, const struct timespec ts[2], struct fuse_file_info *fi)
 {
 	int res;
-	
+
 	/* don't use utime/utimes since they follow symlinks */
 	if (fi)
 		res = futimens(fi->fh, ts);
@@ -583,7 +569,7 @@ static int limitfs_create(const char *path, mode_t mode, struct fuse_file_info *
 	strcat(relative_path, path);
 
 	fd = openat(mountpoint.fd, relative_path, fi->flags, mode);
-  
+
 	if (fd == -1)
 		return -errno;
 
@@ -608,11 +594,10 @@ static int limitfs_open(const char *path, struct fuse_file_info *fi)
 	return 0;
 }
 
-static int limitfs_read(const char *path, char *buf, size_t size, off_t offset,
-		    struct fuse_file_info *fi)
+static int limitfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
 	int res;
-	
+
 	(void) path;
 	res = pread(fi->fh, buf, size, offset);
 	if (res == -1)
@@ -621,11 +606,10 @@ static int limitfs_read(const char *path, char *buf, size_t size, off_t offset,
 	return res;
 }
 
-static int limitfs_read_buf(const char *path, struct fuse_bufvec **bufp,
-			size_t size, off_t offset, struct fuse_file_info *fi)
+static int limitfs_read_buf(const char *path, struct fuse_bufvec **bufp, size_t size, off_t offset, struct fuse_file_info *fi)
 {
 	struct fuse_bufvec *src;
-	
+
 	(void) path;
 
 	src = malloc(sizeof(struct fuse_bufvec));
@@ -643,11 +627,10 @@ static int limitfs_read_buf(const char *path, struct fuse_bufvec **bufp,
 	return 0;
 }
 
-static int limitfs_write(const char *path, const char *buf, size_t size,
-		     off_t offset, struct fuse_file_info *fi)
+static int limitfs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
 	int res;
-	
+
 	(void) path;
 	res = pwrite(fi->fh, buf, size, offset);
 	if (res == -1)
@@ -656,17 +639,16 @@ static int limitfs_write(const char *path, const char *buf, size_t size,
 	return res;
 }
 
-static int limitfs_write_buf(const char *path, struct fuse_bufvec *buf,
-		     off_t offset, struct fuse_file_info *fi)
+static int limitfs_write_buf(const char *path, struct fuse_bufvec *buf, off_t offset, struct fuse_file_info *fi)
 {
 	struct fuse_bufvec dst = FUSE_BUFVEC_INIT(fuse_buf_size(buf));
-	
+
 	(void) path;
 
 	dst.buf[0].flags = FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK;
 	dst.buf[0].fd = fi->fh;
 	dst.buf[0].pos = offset;
-	
+
 	return fuse_buf_copy(&dst, buf, FUSE_BUF_SPLICE_NONBLOCK);
 }
 
@@ -675,7 +657,7 @@ static int limitfs_statfs(const char *path, struct statvfs *stbuf)
 	int res;
 
 	res = fstatvfs(mountpoint.fd, stbuf);
-	
+
 	if (res == -1)
 		return -errno;
 
@@ -685,28 +667,29 @@ static int limitfs_statfs(const char *path, struct statvfs *stbuf)
 static int limitfs_flush(const char *path, struct fuse_file_info *fi)
 {
 	int res;
-	
+
 	(void) path;
 	/* This is called from every close on an open file, so call the
-	   close on the underlying filesystem.	But since flush may be
-	   called multiple times for an open file, this must not really
-	   close the file.  This is important if used on a network
-	   filesystem like NFS which flush the data/metadata on close() */
+		close on the underlying filesystem.	But since flush may be
+		called multiple times for an open file, this must not really
+		close the file.  This is important if used on a network
+		filesystem like NFS which flush the data/metadata on close() */
 	res = close(dup(fi->fh));
 	if (res == -1)
 		return -errno;
-	
+
 	return 0;
 }
 
 char oldest[PATH_MAX+1] = {0};
 time_t mtime = 0;
-int check_if_older(const char *path, const struct stat *sb, int typeflag) {
-    if (typeflag == FTW_F && (mtime == 0 || sb->st_mtime < mtime)) {
-        mtime = sb->st_mtime;
-        strncpy(oldest, path, PATH_MAX);
-    }
-    return 0;
+int check_if_older(const char *path, const struct stat *sb, int typeflag)
+{
+	if (typeflag == FTW_F && (mtime == 0 || sb->st_mtime < mtime)) {
+		mtime = sb->st_mtime;
+		strncpy(oldest, path, PATH_MAX);
+	}
+	return 0;
 }
 
 static int limitfs_release(const char *path, struct fuse_file_info *fi)
@@ -715,43 +698,42 @@ static int limitfs_release(const char *path, struct fuse_file_info *fi)
 	(void) path;
 
 	close(fi->fh);
-	
+
 	struct statvfs *stbuf;
 	stbuf = malloc(sizeof(struct statvfs));
 	fstatvfs(mountpoint.fd, stbuf);
 	perc_used_space = 100 - (stbuf->f_bsize * stbuf->f_bavail * 100 / (stbuf->f_bsize * stbuf->f_blocks));
-	
+
 	int count = 0;
 	while (perc_used_space > options.usage_limit && count < 10) {
-		
+
 		/* clean old files! */
 
 		ftw(mountpoint.path, check_if_older, 1);
-		
+
 		if (unlinkat(mountpoint.fd, oldest, 0) == -1)
 			return -errno;
-		
+
 		fstatvfs(mountpoint.fd, stbuf);
 		perc_used_space = 100 - (stbuf->f_bsize * stbuf->f_bavail * 100 / (stbuf->f_bsize * stbuf->f_blocks));
-		
+
 		syslog(LOG_NOTICE, "file `%s%s' deleted\n", mountpoint.path, oldest);
 
 		oldest[0] = '\0';
 		mtime = 0;
 		count++;
 	}
-	
+
 	free(stbuf);
-	
+
 	return 0;
 }
 
-static int limitfs_fsync(const char *path, int isdatasync,
-		     struct fuse_file_info *fi)
+static int limitfs_fsync(const char *path, int isdatasync, struct fuse_file_info *fi)
 {
 	int res;
 	(void) path;
-	
+
 #ifndef HAVE_FDATASYNC
 	(void) isdatasync;
 #else
@@ -767,11 +749,10 @@ static int limitfs_fsync(const char *path, int isdatasync,
 }
 
 #ifdef HAVE_POSIX_FALLOCATE
-static int limitfs_fallocate(const char *path, int mode,
-			off_t offset, off_t length, struct fuse_file_info *fi)
+static int limitfs_fallocate(const char *path, int mode, off_t offset, off_t length, struct fuse_file_info *fi)
 {
 	(void) path;
-	
+
 	if (mode)
 		return -EOPNOTSUPP;
 
@@ -781,8 +762,7 @@ static int limitfs_fallocate(const char *path, int mode,
 
 #ifdef HAVE_SETXATTR
 /* xattr operations are optional and can safely be left unimplemented */
-static int limitfs_setxattr(const char *path, const char *name, const char *value,
-			size_t size, int flags)
+static int limitfs_setxattr(const char *path, const char *name, const char *value, size_t size, int flags)
 {
 	int res = lsetxattr(path, name, value, size, flags);
 
@@ -791,8 +771,7 @@ static int limitfs_setxattr(const char *path, const char *name, const char *valu
 	return 0;
 }
 
-static int limitfs_getxattr(const char *path, const char *name, char *value,
-			size_t size)
+static int limitfs_getxattr(const char *path, const char *name, char *value, size_t size)
 {
 	int res = lgetxattr(path, name, value, size);
 
@@ -821,13 +800,11 @@ static int limitfs_removexattr(const char *path, const char *name)
 #endif /* HAVE_SETXATTR */
 
 #ifdef HAVE_LIBULOCKMGR
-static int limitfs_lock(const char *path, struct fuse_file_info *fi, int cmd,
-		    struct flock *lock)
+static int limitfs_lock(const char *path, struct fuse_file_info *fi, int cmd, struct flock *lock)
 {
 	(void) path;
 
-	return ulockmgr_op(fi->fh, cmd, lock, &fi->lock_owner,
-			   sizeof(fi->lock_owner));
+	return ulockmgr_op(fi->fh, cmd, lock, &fi->lock_owner, sizeof(fi->lock_owner));
 }
 #endif
 
@@ -835,7 +812,7 @@ static int limitfs_flock(const char *path, struct fuse_file_info *fi, int op)
 {
 	int res;
 	(void) path;
-	
+
 	res = flock(fi->fh, op);
 	if (res == -1)
 		return -errno;
@@ -845,17 +822,14 @@ static int limitfs_flock(const char *path, struct fuse_file_info *fi, int op)
 
 #ifdef HAVE_COPY_FILE_RANGE
 static ssize_t limitfs_copy_file_range(const char *path_in,
-				   struct fuse_file_info *fi_in,
-				   off_t off_in, const char *path_out,
-				   struct fuse_file_info *fi_out,
-				   off_t off_out, size_t len, int flags)
+		struct fuse_file_info *fi_in, off_t off_in, const char *path_out,
+		struct fuse_file_info *fi_out, off_t off_out, size_t len, int flags)
 {
 	ssize_t res;
 	(void) path_in;
 	(void) path_out;
-	
-	res = copy_file_range(fi_in->fh, &off_in, fi_out->fh, &off_out, len,
-			      flags);
+
+	res = copy_file_range(fi_in->fh, &off_in, fi_out->fh, &off_out, len, flags);
 	if (res == -1)
 		return -errno;
 
@@ -865,57 +839,57 @@ static ssize_t limitfs_copy_file_range(const char *path_in,
 
 static struct fuse_operations limitfs_oper = {
 #ifdef FUSE3
-	.init           = limitfs_init,
-	.getattr	= limitfs_getattr_fuse3,
-	.chown		= limitfs_chown_fuse3,
-	.truncate	= limitfs_truncate_fuse3,
-	.rename		= limitfs_rename_fuse3,
-	.chmod		= limitfs_chmod_fuse3,
+	.init = limitfs_init,
+	.getattr = limitfs_getattr_fuse3,
+	.chown = limitfs_chown_fuse3,
+	.truncate = limitfs_truncate_fuse3,
+	.rename = limitfs_rename_fuse3,
+	.chmod = limitfs_chmod_fuse3,
 #endif
 #ifdef FUSE2
-	.getattr	= limitfs_getattr_fuse2,
-	.chown		= limitfs_chown_fuse2,
-	.truncate	= limitfs_truncate_fuse2,
-	.rename		= limitfs_rename_fuse2,
-	.chmod		= limitfs_chmod_fuse2,
+	.getattr = limitfs_getattr_fuse2,
+	.chown = limitfs_chown_fuse2,
+	.truncate = limitfs_truncate_fuse2,
+	.rename = limitfs_rename_fuse2,
+	.chmod = limitfs_chmod_fuse2,
 #endif
-	.access		= limitfs_access,
-	.readlink	= limitfs_readlink,
-	.opendir	= limitfs_opendir,
-	.readdir	= limitfs_readdir,
-	.releasedir	= limitfs_releasedir,
-	.mknod		= limitfs_mknod,
-	.mkdir		= limitfs_mkdir,
-	.symlink	= limitfs_symlink,
-	.unlink		= limitfs_unlink,
-	.rmdir		= limitfs_rmdir,
-	.link		= limitfs_link,
+	.access = limitfs_access,
+	.readlink = limitfs_readlink,
+	.opendir = limitfs_opendir,
+	.readdir = limitfs_readdir,
+	.releasedir = limitfs_releasedir,
+	.mknod = limitfs_mknod,
+	.mkdir = limitfs_mkdir,
+	.symlink = limitfs_symlink,
+	.unlink = limitfs_unlink,
+	.rmdir = limitfs_rmdir,
+	.link = limitfs_link,
 #ifdef HAVE_UTIMENSAT
-	.utimens	= limitfs_utimens,
+	.utimens = limitfs_utimens,
 #endif
-	.create		= limitfs_create,
-	.open		= limitfs_open,
-	.read		= limitfs_read,
-	.read_buf	= limitfs_read_buf,
-	.write		= limitfs_write,
-	.write_buf	= limitfs_write_buf,
-	.statfs		= limitfs_statfs,
-	.flush		= limitfs_flush,
-	.release	= limitfs_release,
-	.fsync		= limitfs_fsync,
+	.create = limitfs_create,
+	.open = limitfs_open,
+	.read = limitfs_read,
+	.read_buf = limitfs_read_buf,
+	.write = limitfs_write,
+	.write_buf = limitfs_write_buf,
+	.statfs = limitfs_statfs,
+	.flush = limitfs_flush,
+	.release = limitfs_release,
+	.fsync = limitfs_fsync,
 #ifdef HAVE_POSIX_FALLOCATE
-	.fallocate	= limitfs_fallocate,
+	.fallocate = limitfs_fallocate,
 #endif
 #ifdef HAVE_SETXATTR
-	.setxattr	= limitfs_setxattr,
-	.getxattr	= limitfs_getxattr,
-	.listxattr	= limitfs_listxattr,
-	.removexattr	= limitfs_removexattr,
+	.setxattr = limitfs_setxattr,
+	.getxattr = limitfs_getxattr,
+	.listxattr = limitfs_listxattr,
+	.removexattr = limitfs_removexattr,
 #endif
 #ifdef HAVE_LIBULOCKMGR
-	.lock		= limitfs_lock,
+	.lock = limitfs_lock,
 #endif
-	.flock		= limitfs_flock,
+	.flock = limitfs_flock,
 #ifdef HAVE_COPY_FILE_RANGE
 	.copy_file_range = limitfs_copy_file_range,
 #endif
@@ -923,131 +897,128 @@ static struct fuse_operations limitfs_oper = {
 
 static void show_help(const char *progname)
 {
-        printf("usage: %s [options] <mountpoint>\n\n", progname);
-        printf("File-system specific options:\n"
-               "    --usage-limit=<d>   Usage limit in percentage\n"
-               "                        (default: \"80%%\")\n"
-               "\n");
+	printf("usage: %s [options] <mountpoint>\n\n", progname);
+	printf("File-system specific options:\n"
+		"    --usage-limit=<d>   Usage limit in percentage (default: \"80%%\")\n\n");
 }
 
 static void show_version(const char *progname)
 {
-        printf("%s version: v%s (build with fuse v%d)\n",
-	       progname,
-	       LIMIT_FS_VERSION,
-	       FUSE_MAJOR_VERSION);
+	printf("%s version: v%s (build with fuse v%d)\n",
+		progname,
+		LIMIT_FS_VERSION,
+		FUSE_MAJOR_VERSION);
 }
 
 
 char *fuse_mnt_resolve_path(const char *progname, const char *orig)
 {
-        char buf[PATH_MAX];
-        char *copy;
-        char *dst;
-        char *end;
-        char *lastcomp;
-        const char *toresolv;
+	char buf[PATH_MAX];
+	char *copy;
+	char *dst;
+	char *end;
+	char *lastcomp;
+	const char *toresolv;
 
-        if (!orig[0]) {
-                fprintf(stderr, "%s: invalid mountpoint '%s'\n", progname,
-                        orig);
-                return NULL;
-        }
+	if (!orig[0]) {
+		fprintf(stderr, "%s: invalid mountpoint '%s'\n", progname,
+			orig);
+		return NULL;
+	}
 
-        copy = strdup(orig);
-        if (copy == NULL) {
-                fprintf(stderr, "%s: failed to allocate memory\n", progname);
-                return NULL;
-        }
+	copy = strdup(orig);
+	if (copy == NULL) {
+		fprintf(stderr, "%s: failed to allocate memory\n", progname);
+		return NULL;
+	}
 
-        toresolv = copy;
-        lastcomp = NULL;
-        for (end = copy + strlen(copy) - 1; end > copy && *end == '/'; end --);
-        if (end[0] != '/') {
-                char *tmp;
-                end[1] = '\0';
-                tmp = strrchr(copy, '/');
-                if (tmp == NULL) {
-                        lastcomp = copy;
-                        toresolv = ".";
-                } else {
-                        lastcomp = tmp + 1;
-                        if (tmp == copy)
-                                toresolv = "/";
-                }
-                if (strcmp(lastcomp, ".") == 0 || strcmp(lastcomp, "..") == 0) {
-                        lastcomp = NULL;
-                        toresolv = copy;
-                }
-                else if (tmp)
-                        tmp[0] = '\0';
-        }
-        if (realpath(toresolv, buf) == NULL) {
-                fprintf(stderr, "%s: bad mount point %s: %s\n", progname, orig,
-                        strerror(errno));
-                free(copy);
-                return NULL;
-        }
-        if (lastcomp == NULL)
-                dst = strdup(buf);
-        else {
-                dst = (char *) malloc(strlen(buf) + 1 + strlen(lastcomp) + 1);
-                if (dst) {
-                        unsigned buflen = strlen(buf);
-                        if (buflen && buf[buflen-1] == '/')
-                                sprintf(dst, "%s%s", buf, lastcomp);
-                        else
-                                sprintf(dst, "%s/%s", buf, lastcomp);
-                }
-        }
-        free(copy);
-        if (dst == NULL)
-                fprintf(stderr, "%s: failed to allocate memory\n", progname);
-        return dst;
+	toresolv = copy;
+	lastcomp = NULL;
+	for (end = copy + strlen(copy) - 1; end > copy && *end == '/'; end --);
+	if (end[0] != '/') {
+		char *tmp;
+		end[1] = '\0';
+		tmp = strrchr(copy, '/');
+		if (tmp == NULL) {
+			lastcomp = copy;
+			toresolv = ".";
+		} else {
+			lastcomp = tmp + 1;
+			if (tmp == copy)
+				toresolv = "/";
+		}
+		if (strcmp(lastcomp, ".") == 0 || strcmp(lastcomp, "..") == 0) {
+			lastcomp = NULL;
+			toresolv = copy;
+		}
+		else if (tmp)
+			tmp[0] = '\0';
+	}
+	if (realpath(toresolv, buf) == NULL) {
+		fprintf(stderr, "%s: bad mount point %s: %s\n", progname, orig,
+			strerror(errno));
+		free(copy);
+		return NULL;
+	}
+	if (lastcomp == NULL)
+		dst = strdup(buf);
+	else {
+		dst = (char *) malloc(strlen(buf) + 1 + strlen(lastcomp) + 1);
+		if (dst) {
+			unsigned buflen = strlen(buf);
+			if (buflen && buf[buflen-1] == '/')
+				sprintf(dst, "%s%s", buf, lastcomp);
+			else
+				sprintf(dst, "%s/%s", buf, lastcomp);
+		}
+	}
+	free(copy);
+	if (dst == NULL)
+		fprintf(stderr, "%s: failed to allocate memory\n", progname);
+	return dst;
 }
 
 int main(int argc, char *argv[])
 {
 	int ret;
-        struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
+	struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
 
 	umask(0);
 
 	/* Set defaults -- we have to use strdup so that
-           fuse_opt_parse can free the defaults if other
-           values are specified */
-        options.usage_limit = 80;
-	
-        /* Parse options */
-        if (fuse_opt_parse(&args, &options, option_spec, NULL) == -1)
-                return 1;
+		fuse_opt_parse can free the defaults if other
+		values are specified */
+	options.usage_limit = 80;
+
+	/* Parse options */
+	if (fuse_opt_parse(&args, &options, option_spec, NULL) == -1)
+		return 1;
 
 	/* When --help is specified, first print our own file-system
-	   specific help text, then signal fuse_main to show
-           additional help (by adding `--help` to the options again)
-           without usage: line (by setting argv[0] to the empty
-           string) */
-        if (options.show_help) {
-                show_help(argv[0]);
-                assert(fuse_opt_add_arg(&args, "--help") == 0);
-                args.argv[0][0] = '\0';
+		specific help text, then signal fuse_main to show
+		additional help (by adding `--help` to the options again)
+		without usage: line (by setting argv[0] to the empty string) */
+	if (options.show_help) {
+		show_help(argv[0]);
+		assert(fuse_opt_add_arg(&args, "--help") == 0);
+		args.argv[0][0] = '\0';
 
 		ret = fuse_main(args.argc, args.argv, &limitfs_oper, NULL);
 		fuse_opt_free_args(&args);
 		return ret;
-        }
-	
+	}
+
 	if (options.show_version) {
-                show_version(argv[0]);
-                assert(fuse_opt_add_arg(&args, "--version") == 0);
-                args.argv[0][0] = '\0';
+		show_version(argv[0]);
+		assert(fuse_opt_add_arg(&args, "--version") == 0);
+		args.argv[0][0] = '\0';
 
 		ret = fuse_main(args.argc, args.argv, &limitfs_oper, NULL);
 		fuse_opt_free_args(&args);
 		return ret;
-        }
-	
-        mountpoint.path = fuse_mnt_resolve_path(strdup(argv[0]), argv[argc - 1]);
+	}
+
+	mountpoint.path = fuse_mnt_resolve_path(strdup(argv[0]), argv[argc - 1]);
 
 	mountpoint.dir = malloc(sizeof(struct limitfs_dirp));
 	if (mountpoint.dir == NULL)
@@ -1058,18 +1029,18 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "error: %s\n", strerror(errno));
 		return -1;
 	}
-	
+
 	if ((mountpoint.fd = dirfd(mountpoint.dir->dp)) == -1) {
 		fprintf(stderr, "error: %s\n", strerror(errno));
 		return -1;
 	}
 	mountpoint.dir->offset = 0;
 	mountpoint.dir->entry = NULL;
-        
-        ret = fuse_main(args.argc, args.argv, &limitfs_oper, NULL);
-        fuse_opt_free_args(&args);
+
+	ret = fuse_main(args.argc, args.argv, &limitfs_oper, NULL);
+	fuse_opt_free_args(&args);
 
 	closedir(mountpoint.dir->dp);
 	free(mountpoint.path);
-        return ret;
+	return ret;
 }
