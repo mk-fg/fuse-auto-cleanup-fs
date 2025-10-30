@@ -13,6 +13,9 @@ Different from original limit-fs in simplified project structure
 and more control over what gets cleaned-up (namely a list of dirs to check
 instead of old files anywhere).
 
+"Used space" above as in "not available to regular user" (`f_blocks - f_bavail`) -
+always counts root-reserved blocks as "used", if filesystem has those.
+
 [limit-fs]: https://github.com/piuma/limit-fs
 
 

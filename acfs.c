@@ -1,10 +1,10 @@
-/**
- * Copyright (C) 2019  Danilo Abbasciano <danilo@piumalab.org>
- * Copyright (C) 2025  Mike Kazantsev
- *
- * This program can be distributed under the terms of the GNU GPL.
- * See the file COPYING.
- */
+/* FUSE: Filesystem in Userspace
+	Copyright (C) 2001-2007 Miklos Szeredi <miklos@szeredi.hu>
+	Copyright (C) 2011 Sebastian Pipping <sebastian@pipping.org>
+	Copyright (C) 2019 Danilo Abbasciano <danilo@piumalab.org>
+	Copyright (C) 2025 Mike Kazantsev
+	This program can be distributed under the terms of the GNU GPL.
+	See the file COPYING. */
 
 #define ACFS_VERSION "1.0"
 #define FUSE_USE_VERSION 31
@@ -27,7 +27,6 @@
 #include <stddef.h>
 #include <assert.h>
 #include <ftw.h>
-#include <syslog.h>
 
 struct acfs_dirp {
 	DIR *dp;
@@ -39,8 +38,6 @@ struct acfs_dirp {
 //  attempt to free() them when the user specifies different values on the command line.
 static struct options {
 	int usage_limit;
-	int show_help;
-	int show_version;
 } options;
 static struct mountpoint {
 	int fd;
@@ -384,47 +381,31 @@ static int acfs_flush(const char *path, struct fuse_file_info *fi) {
 	return res == -1 ? -errno : 0;
 }
 
-char oldest[PATH_MAX+1] = {0};
-time_t mtime = 0;
-int check_if_older(const char *path, const struct stat *sb, int typeflag) {
-	if (typeflag == FTW_F && (mtime == 0 || sb->st_mtime < mtime)) {
-		mtime = sb->st_mtime;
-		strncpy(oldest, path, PATH_MAX);
-	}
+char acfs_cleanup_oldest[PATH_MAX+1] = {0};
+time_t acfs_cleanup_mtime = 0;
+int acfs_cleanup(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf) {
+	if (typeflag != FTW_F || (acfs_cleanup_mtime && acfs_cleanup_mtime < sb->st_mtime)) return 0;
+	acfs_cleanup_mtime = sb->st_mtime;
+	strncpy(acfs_cleanup_oldest, fpath + ftwbuf->base, PATH_MAX);
 	return 0;
 }
 
 static int acfs_release(const char *path, struct fuse_file_info *fi) {
-	int perc_used_space;
 	(void) path;
 	close(fi->fh);
-
-	struct statvfs *stbuf;
-	stbuf = malloc(sizeof(struct statvfs));
-	fstatvfs(mountpoint.fd, stbuf);
-	perc_used_space = 100 - (stbuf->f_bsize * stbuf->f_bavail * 100 / (stbuf->f_bsize * stbuf->f_blocks));
-
-	int count = 0;
-	while (perc_used_space > options.usage_limit && count < 10) {
-
-		/* clean old files! */
-
-		ftw(mountpoint.path, check_if_older, 1);
-
-		if (unlinkat(mountpoint.fd, oldest, 0) == -1) return -errno;
-
-		fstatvfs(mountpoint.fd, stbuf);
-		perc_used_space = 100 - (stbuf->f_bsize * stbuf->f_bavail * 100 / (stbuf->f_bsize * stbuf->f_blocks));
-
-		syslog(LOG_NOTICE, "file `%s%s' deleted\n", mountpoint.path, oldest);
-
-		oldest[0] = '\0';
-		mtime = 0;
-		count++;
-	}
-
-	free(stbuf);
-	return 0;
+	int ret = 0;
+	struct statvfs *st = malloc(sizeof(struct statvfs));
+	if (fstatvfs(mountpoint.fd, st)) { ret = -errno; goto done; }
+	while (100 - (st->f_bavail * 100 / st->f_blocks) > options.usage_limit) {
+		nftw(mountpoint.path, acfs_cleanup, 500, FTW_MOUNT | FTW_PHYS);
+		if (!acfs_cleanup_oldest[0]) break;
+		if (unlinkat(mountpoint.fd, acfs_cleanup_oldest, 0) == -1) { ret = -errno; goto done; }
+		// syslog(LOG_NOTICE, "file  [ %s/%s ] deleted\n", mountpoint.path, acfs_cleanup_oldest);
+		if (fstatvfs(mountpoint.fd, st)) { ret = -errno; goto done; }
+		acfs_cleanup_oldest[0] = '\0'; acfs_cleanup_mtime = 0; }
+	done:
+	free(st);
+	return ret;
 }
 
 static int acfs_fsync(const char *path, int isdatasync, struct fuse_file_info *fi) {
@@ -527,6 +508,7 @@ static struct fuse_operations acfs_oper = {
 };
 
 
+// Copied from libfuse/lib/mount_util.c - seem to check/normalize mountpoint path
 char *fuse_mnt_resolve_path(const char *progname, const char *orig) {
 	char buf[PATH_MAX];
 	char *copy;
@@ -564,8 +546,7 @@ char *fuse_mnt_resolve_path(const char *progname, const char *orig) {
 			lastcomp = NULL;
 			toresolv = copy;
 		}
-		else if (tmp)
-			tmp[0] = '\0';
+		else if (tmp) tmp[0] = '\0';
 	}
 	if (realpath(toresolv, buf) == NULL) {
 		fprintf(stderr, "%s: bad mount point %s: %s\n", progname, orig, strerror(errno));
@@ -606,12 +587,12 @@ static int acfs_opt_proc(void *data, const char *arg, int key, struct fuse_args 
 		case ACFS_KEY_HELP:
 			fuse_opt_add_arg(args, "-h");
 			fuse_main(args->argc, args->argv, &acfs_oper, NULL);
-			fprintf(stderr, "\nACFS filesystem-specific options:\n"
+			printf("\nACFS filesystem-specific options:\n"
 				"    -u <d>   --usage-limit=<d>\n"
 				"       Space usage percentage threshold in mounted directory. Default: 80%%\n\n");
 			exit(1);
 		case ACFS_KEY_VERSION:
-			fprintf(stderr, "acfs version %s\n", ACFS_VERSION);
+			printf("acfs version %s\n", ACFS_VERSION);
 			fuse_opt_add_arg(args, "--version");
 			fuse_main(args->argc, args->argv, &acfs_oper, NULL);
 			exit(0);
@@ -639,16 +620,19 @@ int main(int argc, char *argv[]) {
 
 	mountpoint.dir->dp = opendir(mountpoint.path);
 	if (mountpoint.dir->dp == NULL) {
-		fprintf(stderr, "error: %s\n", strerror(errno));
-		return -1;
-	}
+		fprintf(stderr, "ERROR: %s\n", strerror(errno));
+		return -1; }
 
 	if ((mountpoint.fd = dirfd(mountpoint.dir->dp)) == -1) {
-		fprintf(stderr, "error: %s\n", strerror(errno));
-		return -1;
-	}
+		fprintf(stderr, "ERROR: %s\n", strerror(errno));
+		return -1; }
 	mountpoint.dir->offset = 0;
 	mountpoint.dir->entry = NULL;
+
+	struct statvfs st;
+	if (fstatvfs(mountpoint.fd, &st) || !st.f_blocks) {
+		fprintf(stderr, "ERROR: Failed to check free space amount on mounted dir\n");
+		return -1; }
 
 	ret = fuse_main(args.argc, args.argv, &acfs_oper, NULL);
 	fuse_opt_free_args(&args);
