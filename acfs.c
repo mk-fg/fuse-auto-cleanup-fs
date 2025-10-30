@@ -53,7 +53,6 @@ int acfs_opts_def_usage_limit = 90;
 
 
 static void *acfs_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {
-	(void) conn;
 	cfg->use_ino = 1;
 	cfg->nullpath_ok = 1;
 
@@ -73,7 +72,6 @@ static void *acfs_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {
 
 static int acfs_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi) {
 	int res;
-	(void) path;
 	if (fi) res = fstat(fi->fh, stbuf);
 	else {
 		/* res = lstat(path, stbuf); */
@@ -154,7 +152,6 @@ static inline struct acfs_dirp *get_dirp(struct fuse_file_info *fi) {
 static int acfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags) {
 	struct acfs_dirp *d = get_dirp(fi);
-	(void) path;
 	if (offset != d->offset) {
 		seekdir(d->dp, offset);
 		d->entry = NULL;
@@ -188,7 +185,6 @@ static int acfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
 static int acfs_releasedir(const char *path, struct fuse_file_info *fi) {
 	struct acfs_dirp *d = get_dirp(fi);
-	(void) path;
 	if (d->dp == acfs_mp.dir->dp) return 0;
 	closedir(d->dp);
 	free(d);
@@ -326,14 +322,12 @@ static int acfs_open(const char *path, struct fuse_file_info *fi) {
 
 static int acfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
 	int res;
-	(void) path;
 	res = pread(fi->fh, buf, size, offset);
 	return res == -1 ? -errno : 0;
 }
 
 static int acfs_read_buf(const char *path, struct fuse_bufvec **bufp, size_t size, off_t offset, struct fuse_file_info *fi) {
 	struct fuse_bufvec *src;
-	(void) path;
 	src = malloc(sizeof(struct fuse_bufvec));
 	if (src == NULL) return -ENOMEM;
 	*src = FUSE_BUFVEC_INIT(size);
@@ -346,14 +340,12 @@ static int acfs_read_buf(const char *path, struct fuse_bufvec **bufp, size_t siz
 
 static int acfs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
 	int res;
-	(void) path;
 	res = pwrite(fi->fh, buf, size, offset);
 	return res == -1 ? -errno : 0;
 }
 
 static int acfs_write_buf(const char *path, struct fuse_bufvec *buf, off_t offset, struct fuse_file_info *fi) {
 	struct fuse_bufvec dst = FUSE_BUFVEC_INIT(fuse_buf_size(buf));
-	(void) path;
 	dst.buf[0].flags = FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK;
 	dst.buf[0].fd = fi->fh;
 	dst.buf[0].pos = offset;
@@ -368,7 +360,6 @@ static int acfs_statfs(const char *path, struct statvfs *stbuf) {
 
 static int acfs_flush(const char *path, struct fuse_file_info *fi) {
 	int res;
-	(void) path;
 	/* This is called from every close on an open file, so call the
 		close on the underlying filesystem.	But since flush may be
 		called multiple times for an open file, this must not really
@@ -389,7 +380,6 @@ int acfs_cleanup(const char *fpath, const struct stat *sb, int typeflag, struct 
 
 static int acfs_release(const char *path, struct fuse_file_info *fi) {
 	int res = 0;
-	(void) path;
 	if (close(fi->fh) == -1) res = -errno;
 	struct statvfs st;
 	if (fstatvfs(acfs_mp.cleanup_fd, &st)) return -errno;
@@ -404,14 +394,12 @@ static int acfs_release(const char *path, struct fuse_file_info *fi) {
 
 static int acfs_fsync(const char *path, int isdatasync, struct fuse_file_info *fi) {
 	int res;
-	(void) path;
 	if (isdatasync) res = fdatasync(fi->fh);
 	else res = fsync(fi->fh);
 	return res == -1 ? -errno : 0;
 }
 
 static int acfs_fallocate(const char *path, int mode, off_t offset, off_t length, struct fuse_file_info *fi) {
-	(void) path;
 	if (mode) return -EOPNOTSUPP;
 	return -posix_fallocate(fi->fh, offset, length);
 }
@@ -439,7 +427,6 @@ static int acfs_removexattr(const char *path, const char *name) {
 
 static int acfs_flock(const char *path, struct fuse_file_info *fi, int op) {
 	int res;
-	(void) path;
 	res = flock(fi->fh, op);
 	return res == -1 ? -errno : 0;
 }
@@ -448,8 +435,6 @@ static ssize_t acfs_copy_file_range(const char *path_in,
 		struct fuse_file_info *fi_in, off_t off_in, const char *path_out,
 		struct fuse_file_info *fi_out, off_t off_out, size_t len, int flags) {
 	ssize_t res;
-	(void) path_in;
-	(void) path_out;
 	res = copy_file_range(fi_in->fh, &off_in, fi_out->fh, &off_out, len, flags);
 	return res == -1 ? -errno : 0;
 }

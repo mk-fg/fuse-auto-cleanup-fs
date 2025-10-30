@@ -17,6 +17,12 @@ always counts root-reserved blocks as "used", if filesystem has those.
 
 [limit-fs]: https://github.com/piuma/limit-fs
 
+Repository URLs:
+
+- <https://github.com/mk-fg/fuse-auto-cleanup-fs>
+- <https://codeberg.org/mk-fg/fuse-auto-cleanup-fs>
+- <https://fraggod.net/code/git/fuse-auto-cleanup-fs>
+
 
 # Build / Requirements
 
@@ -32,17 +38,19 @@ Run `make` to build `acfs` binary, that's it.
 # Usage
 
 Something like: `./acfs /mnt/storage/temp`\
+Or when it's in PATH: `mount -t fuse.acfs acfs /mnt/storage/temp`\
 Then unmount as usual: `umount /mnt/storage/temp`
 
-Always replaces directory with a new mountpoint, so only needs it as a single argument.\
+Always replaces directory with a new mountpoint,
+does not use "source" argument (`acfs` in mount-command above).
 To access underlying dir at the same time, bind-mount it (or its parent dir)
 to multiple places first.
 
-Run `./acfs -h` to see acfs-specific options
-(like `-u/--usage-limit` threshold) at the end, with info on their defaults.
+Run `./acfs -h` to see acfs-specific options at the end
+(like `-u/--usage-limit` threshold), with info on their defaults.
 
-If installed to PATH like `/usr/bin/acfs`, it can be used from `/etc/fstab`
-or systemd mount units, same as any other fuse-fs, for example:
+If installed to PATH like `/usr/bin/acfs`, can also be used from `/etc/fstab`
+or systemd mount units, same as any other FUSE filesystem, for example:
 ```
 acfs /mnt/storage/temp fuse.acfs usage-limit=90,uid=myuser,gid=myuser,nofail
 ```
