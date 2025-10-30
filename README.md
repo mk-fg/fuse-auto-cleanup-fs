@@ -37,12 +37,12 @@ To access underlying dir at the same time, bind-mount it (or its parent dir)
 to multiple places first.
 
 Run `./acfs -h` to see acfs-specific options
-(like `-u/--usage-limit` threshold) at the top, with info on their defaults.
+(like `-u/--usage-limit` threshold) at the end, with info on their defaults.
 
-If installed along with `mount.acfs` wrapper to PATH, it can be used from
-`/etc/fstab` or systemd mount units, same as any other fuse-fs, for example:
+If installed to PATH like `/usr/bin/acfs`, it can be used from `/etc/fstab`
+or systemd mount units, same as any other fuse-fs, for example:
 ```
-acfs /mnt/storage/temp acfs usage-limit=90,uid=myuser,gid=myuser,nofail
+acfs /mnt/storage/temp fuse.acfs usage-limit=90,uid=myuser,gid=myuser,nofail
 ```
 
 systemd should auto-order that mount after `/mnt/storage`,

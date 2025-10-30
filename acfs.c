@@ -35,35 +35,18 @@ struct acfs_dirp {
 	off_t offset;
 };
 
-/**
- * Command line options
- *
- * We can't set default values for the char* fields here because
- * fuse_opt_parse would attempt to free() them when the user specifies
- * different values on the command line.
- */
+// Can't set default values for the char* fields here because fuse_opt_parse would
+//  attempt to free() them when the user specifies different values on the command line.
 static struct options {
 	int usage_limit;
 	int show_help;
 	int show_version;
 } options;
-
 static struct mountpoint {
 	int fd;
 	struct acfs_dirp *dir;
 	char *path;
 } mountpoint;
-
-#define OPTION(t, p) { t, offsetof(struct options, p), 1 }
-static const struct fuse_opt option_spec[] = {
-	OPTION("-u %d", usage_limit),
-	OPTION("--usage-limit=%d", usage_limit),
-	OPTION("-h", show_help),
-	OPTION("--help", show_help),
-	OPTION("-V", show_version),
-	OPTION("--version", show_version),
-	FUSE_OPT_END
-};
 
 static void *acfs_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {
 	(void) conn;
@@ -543,19 +526,6 @@ static struct fuse_operations acfs_oper = {
 	// .lseek
 };
 
-static void show_help(const char *progname) {
-	printf("usage: %s [options] <mountpoint>\n\n", progname);
-	printf("File-system specific options:\n"
-		"    -u <d>   --usage-limit=<d>\n"
-		"       Space usage percentage threshold in mounted directory. Default: 80%%\n\n");
-}
-
-
-static void show_version(const char *progname) {
-	printf("%s version: v%s (build with fuse v%d)\n",
-		progname, ACFS_VERSION, FUSE_MAJOR_VERSION);
-}
-
 
 char *fuse_mnt_resolve_path(const char *progname, const char *orig) {
 	char buf[PATH_MAX];
@@ -617,47 +587,55 @@ char *fuse_mnt_resolve_path(const char *progname, const char *orig) {
 }
 
 
+#define ACFS_OPT(t, p) { t, offsetof(struct options, p), 1 }
+enum { ACFS_KEY_HELP, ACFS_KEY_VERSION };
+static const struct fuse_opt option_spec[] = {
+	ACFS_OPT("-u %d", usage_limit),
+	ACFS_OPT("-u=%d", usage_limit),
+	ACFS_OPT("--usage-limit %d", usage_limit),
+	ACFS_OPT("--usage-limit=%d", usage_limit),
+	ACFS_OPT("usage-limit=%d", usage_limit),
+	FUSE_OPT_KEY("-V", ACFS_KEY_VERSION),
+	FUSE_OPT_KEY("--version", ACFS_KEY_VERSION),
+	FUSE_OPT_KEY("-h", ACFS_KEY_HELP),
+	FUSE_OPT_KEY("--help", ACFS_KEY_HELP),
+	FUSE_OPT_END };
+
+static int acfs_opt_proc(void *data, const char *arg, int key, struct fuse_args *args) {
+	switch (key) {
+		case ACFS_KEY_HELP:
+			fuse_opt_add_arg(args, "-h");
+			fuse_main(args->argc, args->argv, &acfs_oper, NULL);
+			fprintf(stderr, "\nACFS filesystem-specific options:\n"
+				"    -u <d>   --usage-limit=<d>\n"
+				"       Space usage percentage threshold in mounted directory. Default: 80%%\n\n");
+			exit(1);
+		case ACFS_KEY_VERSION:
+			fprintf(stderr, "acfs version %s\n", ACFS_VERSION);
+			fuse_opt_add_arg(args, "--version");
+			fuse_main(args->argc, args->argv, &acfs_oper, NULL);
+			exit(0);
+		case FUSE_OPT_KEY_OPT:
+			if (arg[0] == '-') { // all rw, dev, suid, etc "-o <options>" also pass through here
+				fprintf(stderr, "ERROR: unrecognized command-line option [ %s ]\n", arg);
+				exit(1); } }
+	return 1; }
+
 int main(int argc, char *argv[]) {
 	int ret;
 	struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
-
 	umask(0);
 
-	/* Set defaults -- we have to use strdup so that
-		fuse_opt_parse can free the defaults if other
-		values are specified */
 	options.usage_limit = 80;
+	if (fuse_opt_parse(&args, &options, option_spec, acfs_opt_proc) == -1) return 1;
+	if (args.argc == 3 || args.argc == 5) {
+		// Remove "device" argument in "mount -t fuse.acfs ..." with/without "-o" "<opts>"
+		args.argc--; args.argv[args.argc-1] = args.argv[args.argc]; }
 
-	/* Parse options */
-	if (fuse_opt_parse(&args, &options, option_spec, NULL) == -1) return 1;
-
-	/* When --help is specified, first print our own file-system
-		specific help text, then signal fuse_main to show
-		additional help (by adding `--help` to the options again)
-		without usage: line (by setting argv[0] to the empty string) */
-	if (options.show_help) {
-		show_help(argv[0]);
-		assert(fuse_opt_add_arg(&args, "--help") == 0);
-		args.argv[0][0] = '\0';
-		ret = fuse_main(args.argc, args.argv, &acfs_oper, NULL);
-		fuse_opt_free_args(&args);
-		return ret;
-	}
-
-	if (options.show_version) {
-		show_version(argv[0]);
-		assert(fuse_opt_add_arg(&args, "--version") == 0);
-		args.argv[0][0] = '\0';
-		ret = fuse_main(args.argc, args.argv, &acfs_oper, NULL);
-		fuse_opt_free_args(&args);
-		return ret;
-	}
-
-	mountpoint.path = fuse_mnt_resolve_path(strdup(argv[0]), argv[argc - 1]);
+	mountpoint.path = fuse_mnt_resolve_path(strdup(args.argv[0]), args.argv[args.argc-1]);
 
 	mountpoint.dir = malloc(sizeof(struct acfs_dirp));
-	if (mountpoint.dir == NULL)
-		return -ENOMEM;
+	if (mountpoint.dir == NULL) return -ENOMEM;
 
 	mountpoint.dir->dp = opendir(mountpoint.path);
 	if (mountpoint.dir->dp == NULL) {
