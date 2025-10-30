@@ -1,40 +1,17 @@
 /**
- * FUSE: Filesystem in Userspace
- *  Copyright (C) 2019  Danilo Abbasciano <danilo@piumalab.org>
+ * Copyright (C) 2019  Danilo Abbasciano <danilo@piumalab.org>
+ * Copyright (C) 2025  Mike Kazantsev
  *
  * This program can be distributed under the terms of the GNU GPL.
  * See the file COPYING.
  */
 
-/** @file
- *
- * FUSE filesystem that removes the oldest file whenever the free
- * space reaches the set percentage.
- *
- * You can use it in a no empty directory, anything you write in will
- * be written in the FS below. After unmounting it all files remain in
- * the unmounted directory.
- */
-
-#define LIMIT_FS_VERSION "1.0"
-
-#ifdef FUSE3
+#define ACFS_VERSION "1.0"
 #define FUSE_USE_VERSION 31
-#else
-#define FUSE_USE_VERSION 29
-#endif
-
-#ifdef HAVE_CONFIG_H
-#include <config.h>
-#endif
 
 #define _GNU_SOURCE
 
 #include <fuse.h>
-
-#ifdef HAVE_LIBULOCKMGR
-#include <ulockmgr.h>
-#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,16 +22,14 @@
 #include <dirent.h>
 #include <errno.h>
 #include <sys/time.h>
-#ifdef HAVE_SETXATTR
 #include <sys/xattr.h>
-#endif
 #include <sys/file.h> /* flock(2) */
 #include <stddef.h>
 #include <assert.h>
 #include <ftw.h>
 #include <syslog.h>
 
-struct limitfs_dirp {
+struct acfs_dirp {
 	DIR *dp;
 	struct dirent *entry;
 	off_t offset;
@@ -75,12 +50,13 @@ static struct options {
 
 static struct mountpoint {
 	int fd;
-	struct limitfs_dirp *dir;
+	struct acfs_dirp *dir;
 	char *path;
 } mountpoint;
 
 #define OPTION(t, p) { t, offsetof(struct options, p), 1 }
 static const struct fuse_opt option_spec[] = {
+	OPTION("-u %d", usage_limit),
 	OPTION("--usage-limit=%d", usage_limit),
 	OPTION("-h", show_help),
 	OPTION("--help", show_help),
@@ -89,8 +65,7 @@ static const struct fuse_opt option_spec[] = {
 	FUSE_OPT_END
 };
 
-#ifdef FUSE3
-static void *limitfs_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
+static void *acfs_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 {
 	(void) conn;
 
@@ -110,9 +85,8 @@ static void *limitfs_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 
 	return NULL;
 }
-#endif
 
-static int limitfs_getattr_fuse3(const char *path, struct stat *stbuf, struct fuse_file_info *fi)
+static int acfs_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi)
 {
 	int res;
 	(void) path;
@@ -136,7 +110,7 @@ static int limitfs_getattr_fuse3(const char *path, struct stat *stbuf, struct fu
 	return 0;
 }
 
-static int limitfs_access(const char *path, int mask)
+static int acfs_access(const char *path, int mask)
 {
 	int res;
 
@@ -152,7 +126,7 @@ static int limitfs_access(const char *path, int mask)
 	return 0;
 }
 
-static int limitfs_readlink(const char *path, char *buf, size_t size)
+static int acfs_readlink(const char *path, char *buf, size_t size)
 {
 	int res;
 	char relative_path[ strlen(path) + 1];
@@ -195,7 +169,7 @@ DIR *opendirat(int dir_fd, char const *path, int extra_flags) {
 	return dirp;
 }
 
-static int limitfs_opendir(const char *path, struct fuse_file_info *fi)
+static int acfs_opendir(const char *path, struct fuse_file_info *fi)
 {
 	int res;
 
@@ -210,12 +184,9 @@ static int limitfs_opendir(const char *path, struct fuse_file_info *fi)
 		return 0;
 	}
 
-	struct limitfs_dirp *d = malloc(sizeof(struct limitfs_dirp));
+	struct acfs_dirp *d = malloc(sizeof(struct acfs_dirp));
 	if (d == NULL)
 		return -ENOMEM;
-	/*
-	d->dp = opendir(path);
-	*/
 
 	d->dp = opendirat(mountpoint.fd, path, 0);
 	if (d->dp == NULL) {
@@ -230,26 +201,19 @@ static int limitfs_opendir(const char *path, struct fuse_file_info *fi)
 	return 0;
 }
 
-static inline struct limitfs_dirp *get_dirp(struct fuse_file_info *fi)
+static inline struct acfs_dirp *get_dirp(struct fuse_file_info *fi)
 {
-	return (struct limitfs_dirp *) (uintptr_t) fi->fh;
+	return (struct acfs_dirp *) (uintptr_t) fi->fh;
 }
 
-#ifdef FUSE3
-static int limitfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
+static int acfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags)
 {
-	struct limitfs_dirp *d = get_dirp(fi);
+	struct acfs_dirp *d = get_dirp(fi);
 
 	(void) path;
 	if (offset != d->offset) {
-#ifndef __FreeBSD__
 		seekdir(d->dp, offset);
-#else
-		/* Subtract the one that we add when calling
-			telldir() below */
-		seekdir(d->dp, offset-1);
-#endif
 		d->entry = NULL;
 		d->offset = offset;
 	}
@@ -263,7 +227,6 @@ static int limitfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 			if (!d->entry)
 				break;
 		}
-#ifdef HAVE_FSTATAT
 		if (flags & FUSE_READDIR_PLUS) {
 			int res;
 
@@ -271,20 +234,12 @@ static int limitfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 			if (res != -1)
 				fill_flags |= FUSE_FILL_DIR_PLUS;
 		}
-#endif
 		if (!(fill_flags & FUSE_FILL_DIR_PLUS)) {
 			memset(&st, 0, sizeof(st));
 			st.st_ino = d->entry->d_ino;
 			st.st_mode = d->entry->d_type << 12;
 		}
 		nextoff = telldir(d->dp);
-#ifdef __FreeBSD__
-		/* Under FreeBSD, telldir() may return 0 the first time
-			it is called. But for libfuse, an offset of zero
-			means that offsets are not supported, so we shift
-			everything by one. */
-		nextoff++;
-#endif
 		if (filler(buf, d->entry->d_name, &st, nextoff, fill_flags))
 			break;
 
@@ -294,56 +249,10 @@ static int limitfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
 	return 0;
 }
-#endif
 
-#ifdef FUSE2
-static int limitfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
+static int acfs_releasedir(const char *path, struct fuse_file_info *fi)
 {
-	struct limitfs_dirp *d = get_dirp(fi);
-
-	(void) path;
-	if (offset != d->offset) {
-#ifndef __FreeBSD__
-		seekdir(d->dp, offset);
-#else
-		/* Subtract the one that we add when calling
-			telldir() below */
-		seekdir(d->dp, offset-1);
-#endif
-		d->entry = NULL;
-		d->offset = offset;
-	}
-	while (1) {
-		struct stat st;
-		off_t nextoff;
-
-		if (!d->entry) {
-			d->entry = readdir(d->dp);
-			if (!d->entry)
-				break;
-		}
-		nextoff = telldir(d->dp);
-#ifdef __FreeBSD__
-		/* Under FreeBSD, telldir() may return 0 the first time
-			it is called. But for libfuse, an offset of zero
-			means that offsets are not supported, so we shift
-			everything by one. */
-		nextoff++;
-#endif
-		if (filler(buf, d->entry->d_name, &st, nextoff))
-			break;
-
-		d->entry = NULL;
-		d->offset = nextoff;
-	}
-
-	return 0;
-}
-#endif
-
-static int limitfs_releasedir(const char *path, struct fuse_file_info *fi)
-{
-	struct limitfs_dirp *d = get_dirp(fi);
+	struct acfs_dirp *d = get_dirp(fi);
 	(void) path;
 	if (d->dp == mountpoint.dir->dp) {
 		return 0;
@@ -354,7 +263,7 @@ static int limitfs_releasedir(const char *path, struct fuse_file_info *fi)
 	return 0;
 }
 
-static int limitfs_mknod(const char *path, mode_t mode, dev_t rdev)
+static int acfs_mknod(const char *path, mode_t mode, dev_t rdev)
 {
 	int res;
 
@@ -368,7 +277,7 @@ static int limitfs_mknod(const char *path, mode_t mode, dev_t rdev)
 	return 0;
 }
 
-static int limitfs_mkdir(const char *path, mode_t mode)
+static int acfs_mkdir(const char *path, mode_t mode)
 {
 	int res;
 	char relative_path[ strlen(path) + 1];
@@ -382,7 +291,7 @@ static int limitfs_mkdir(const char *path, mode_t mode)
 	return 0;
 }
 
-static int limitfs_unlink(const char *path)
+static int acfs_unlink(const char *path)
 {
 	int res;
 
@@ -397,7 +306,7 @@ static int limitfs_unlink(const char *path)
 	return 0;
 }
 
-static int limitfs_rmdir(const char *path)
+static int acfs_rmdir(const char *path)
 {
 	int res;
 
@@ -414,7 +323,7 @@ static int limitfs_rmdir(const char *path)
 	return 0;
 }
 
-static int limitfs_symlink(const char *from, const char *to)
+static int acfs_symlink(const char *from, const char *to)
 {
 	int res;
 	char relative_to[ strlen(to) + 1];
@@ -429,7 +338,7 @@ static int limitfs_symlink(const char *from, const char *to)
 }
 
 
-static int limitfs_rename_fuse3(const char *from, const char *to, unsigned int flags)
+static int acfs_rename(const char *from, const char *to, unsigned int flags)
 {
 	int res;
 	char relative_from[ strlen(from) + 1];
@@ -451,7 +360,7 @@ static int limitfs_rename_fuse3(const char *from, const char *to, unsigned int f
 	return 0;
 }
 
-static int limitfs_link(const char *from, const char *to)
+static int acfs_link(const char *from, const char *to)
 {
 	int res;
 
@@ -462,7 +371,7 @@ static int limitfs_link(const char *from, const char *to)
 	return 0;
 }
 
-static int limitfs_chmod_fuse3(const char *path, mode_t mode, struct fuse_file_info *fi)
+static int acfs_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
 	int res;
 
@@ -481,7 +390,7 @@ static int limitfs_chmod_fuse3(const char *path, mode_t mode, struct fuse_file_i
 	return 0;
 }
 
-static int limitfs_chown_fuse3(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi)
+static int acfs_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi)
 {
 	int res;
 
@@ -502,7 +411,7 @@ static int limitfs_chown_fuse3(const char *path, uid_t uid, gid_t gid, struct fu
 	return 0;
 }
 
-static int limitfs_truncate_fuse3(const char *path, off_t size, struct fuse_file_info *fi)
+static int acfs_truncate(const char *path, off_t size, struct fuse_file_info *fi)
 {
 	int res;
 
@@ -517,35 +426,7 @@ static int limitfs_truncate_fuse3(const char *path, off_t size, struct fuse_file
 	return 0;
 }
 
-#ifdef FUSE2
-static int limitfs_getattr_fuse2(const char *path, struct stat *stbuf)
-{
-	return limitfs_getattr_fuse3(path, stbuf, false);
-}
-
-static int limitfs_rename_fuse2(const char *from, const char *to)
-{
-	return limitfs_rename_fuse3(from, to, 0);
-}
-
-static int limitfs_chmod_fuse2(const char *path, mode_t mode)
-{
-	return limitfs_chmod_fuse3(path, mode, false);
-}
-
-static int limitfs_chown_fuse2(const char *path, uid_t uid, gid_t gid)
-{
-	return limitfs_chown_fuse3(path, uid, gid, false);
-}
-
-static int limitfs_truncate_fuse2(const char *path, off_t size)
-{
-	return limitfs_truncate_fuse3(path, size, false);
-}
-#endif
-
-#ifdef HAVE_UTIMENSAT
-static int limitfs_utimens(const char *path, const struct timespec ts[2], struct fuse_file_info *fi)
+static int acfs_utimens(const char *path, const struct timespec ts[2], struct fuse_file_info *fi)
 {
 	int res;
 
@@ -559,9 +440,8 @@ static int limitfs_utimens(const char *path, const struct timespec ts[2], struct
 
 	return 0;
 }
-#endif
 
-static int limitfs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
+static int acfs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
 	int fd;
 	char relative_path[ strlen(path) + 1];
@@ -577,7 +457,7 @@ static int limitfs_create(const char *path, mode_t mode, struct fuse_file_info *
 	return 0;
 }
 
-static int limitfs_open(const char *path, struct fuse_file_info *fi)
+static int acfs_open(const char *path, struct fuse_file_info *fi)
 {
 	int fd;
 
@@ -594,7 +474,7 @@ static int limitfs_open(const char *path, struct fuse_file_info *fi)
 	return 0;
 }
 
-static int limitfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
+static int acfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
 	int res;
 
@@ -606,7 +486,7 @@ static int limitfs_read(const char *path, char *buf, size_t size, off_t offset, 
 	return res;
 }
 
-static int limitfs_read_buf(const char *path, struct fuse_bufvec **bufp, size_t size, off_t offset, struct fuse_file_info *fi)
+static int acfs_read_buf(const char *path, struct fuse_bufvec **bufp, size_t size, off_t offset, struct fuse_file_info *fi)
 {
 	struct fuse_bufvec *src;
 
@@ -627,7 +507,7 @@ static int limitfs_read_buf(const char *path, struct fuse_bufvec **bufp, size_t 
 	return 0;
 }
 
-static int limitfs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
+static int acfs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
 	int res;
 
@@ -639,7 +519,7 @@ static int limitfs_write(const char *path, const char *buf, size_t size, off_t o
 	return res;
 }
 
-static int limitfs_write_buf(const char *path, struct fuse_bufvec *buf, off_t offset, struct fuse_file_info *fi)
+static int acfs_write_buf(const char *path, struct fuse_bufvec *buf, off_t offset, struct fuse_file_info *fi)
 {
 	struct fuse_bufvec dst = FUSE_BUFVEC_INIT(fuse_buf_size(buf));
 
@@ -652,7 +532,7 @@ static int limitfs_write_buf(const char *path, struct fuse_bufvec *buf, off_t of
 	return fuse_buf_copy(&dst, buf, FUSE_BUF_SPLICE_NONBLOCK);
 }
 
-static int limitfs_statfs(const char *path, struct statvfs *stbuf)
+static int acfs_statfs(const char *path, struct statvfs *stbuf)
 {
 	int res;
 
@@ -664,7 +544,7 @@ static int limitfs_statfs(const char *path, struct statvfs *stbuf)
 	return 0;
 }
 
-static int limitfs_flush(const char *path, struct fuse_file_info *fi)
+static int acfs_flush(const char *path, struct fuse_file_info *fi)
 {
 	int res;
 
@@ -692,7 +572,7 @@ int check_if_older(const char *path, const struct stat *sb, int typeflag)
 	return 0;
 }
 
-static int limitfs_release(const char *path, struct fuse_file_info *fi)
+static int acfs_release(const char *path, struct fuse_file_info *fi)
 {
 	int perc_used_space;
 	(void) path;
@@ -729,18 +609,14 @@ static int limitfs_release(const char *path, struct fuse_file_info *fi)
 	return 0;
 }
 
-static int limitfs_fsync(const char *path, int isdatasync, struct fuse_file_info *fi)
+static int acfs_fsync(const char *path, int isdatasync, struct fuse_file_info *fi)
 {
 	int res;
 	(void) path;
 
-#ifndef HAVE_FDATASYNC
-	(void) isdatasync;
-#else
 	if (isdatasync)
 		res = fdatasync(fi->fh);
 	else
-#endif
 		res = fsync(fi->fh);
 	if (res == -1)
 		return -errno;
@@ -748,8 +624,7 @@ static int limitfs_fsync(const char *path, int isdatasync, struct fuse_file_info
 	return 0;
 }
 
-#ifdef HAVE_POSIX_FALLOCATE
-static int limitfs_fallocate(const char *path, int mode, off_t offset, off_t length, struct fuse_file_info *fi)
+static int acfs_fallocate(const char *path, int mode, off_t offset, off_t length, struct fuse_file_info *fi)
 {
 	(void) path;
 
@@ -758,11 +633,9 @@ static int limitfs_fallocate(const char *path, int mode, off_t offset, off_t len
 
 	return -posix_fallocate(fi->fh, offset, length);
 }
-#endif
 
-#ifdef HAVE_SETXATTR
 /* xattr operations are optional and can safely be left unimplemented */
-static int limitfs_setxattr(const char *path, const char *name, const char *value, size_t size, int flags)
+static int acfs_setxattr(const char *path, const char *name, const char *value, size_t size, int flags)
 {
 	int res = lsetxattr(path, name, value, size, flags);
 
@@ -771,7 +644,7 @@ static int limitfs_setxattr(const char *path, const char *name, const char *valu
 	return 0;
 }
 
-static int limitfs_getxattr(const char *path, const char *name, char *value, size_t size)
+static int acfs_getxattr(const char *path, const char *name, char *value, size_t size)
 {
 	int res = lgetxattr(path, name, value, size);
 
@@ -780,7 +653,7 @@ static int limitfs_getxattr(const char *path, const char *name, char *value, siz
 	return res;
 }
 
-static int limitfs_listxattr(const char *path, char *list, size_t size)
+static int acfs_listxattr(const char *path, char *list, size_t size)
 {
 	int res = llistxattr(path, list, size);
 
@@ -789,7 +662,7 @@ static int limitfs_listxattr(const char *path, char *list, size_t size)
 	return res;
 }
 
-static int limitfs_removexattr(const char *path, const char *name)
+static int acfs_removexattr(const char *path, const char *name)
 {
 	int res = lremovexattr(path, name);
 
@@ -797,18 +670,8 @@ static int limitfs_removexattr(const char *path, const char *name)
 		return -errno;
 	return 0;
 }
-#endif /* HAVE_SETXATTR */
 
-#ifdef HAVE_LIBULOCKMGR
-static int limitfs_lock(const char *path, struct fuse_file_info *fi, int cmd, struct flock *lock)
-{
-	(void) path;
-
-	return ulockmgr_op(fi->fh, cmd, lock, &fi->lock_owner, sizeof(fi->lock_owner));
-}
-#endif
-
-static int limitfs_flock(const char *path, struct fuse_file_info *fi, int op)
+static int acfs_flock(const char *path, struct fuse_file_info *fi, int op)
 {
 	int res;
 	(void) path;
@@ -820,8 +683,7 @@ static int limitfs_flock(const char *path, struct fuse_file_info *fi, int op)
 	return 0;
 }
 
-#ifdef HAVE_COPY_FILE_RANGE
-static ssize_t limitfs_copy_file_range(const char *path_in,
+static ssize_t acfs_copy_file_range(const char *path_in,
 		struct fuse_file_info *fi_in, off_t off_in, const char *path_out,
 		struct fuse_file_info *fi_out, off_t off_out, size_t len, int flags)
 {
@@ -835,78 +697,66 @@ static ssize_t limitfs_copy_file_range(const char *path_in,
 
 	return res;
 }
-#endif
 
-static struct fuse_operations limitfs_oper = {
-#ifdef FUSE3
-	.init = limitfs_init,
-	.getattr = limitfs_getattr_fuse3,
-	.chown = limitfs_chown_fuse3,
-	.truncate = limitfs_truncate_fuse3,
-	.rename = limitfs_rename_fuse3,
-	.chmod = limitfs_chmod_fuse3,
-#endif
-#ifdef FUSE2
-	.getattr = limitfs_getattr_fuse2,
-	.chown = limitfs_chown_fuse2,
-	.truncate = limitfs_truncate_fuse2,
-	.rename = limitfs_rename_fuse2,
-	.chmod = limitfs_chmod_fuse2,
-#endif
-	.access = limitfs_access,
-	.readlink = limitfs_readlink,
-	.opendir = limitfs_opendir,
-	.readdir = limitfs_readdir,
-	.releasedir = limitfs_releasedir,
-	.mknod = limitfs_mknod,
-	.mkdir = limitfs_mkdir,
-	.symlink = limitfs_symlink,
-	.unlink = limitfs_unlink,
-	.rmdir = limitfs_rmdir,
-	.link = limitfs_link,
-#ifdef HAVE_UTIMENSAT
-	.utimens = limitfs_utimens,
-#endif
-	.create = limitfs_create,
-	.open = limitfs_open,
-	.read = limitfs_read,
-	.read_buf = limitfs_read_buf,
-	.write = limitfs_write,
-	.write_buf = limitfs_write_buf,
-	.statfs = limitfs_statfs,
-	.flush = limitfs_flush,
-	.release = limitfs_release,
-	.fsync = limitfs_fsync,
-#ifdef HAVE_POSIX_FALLOCATE
-	.fallocate = limitfs_fallocate,
-#endif
-#ifdef HAVE_SETXATTR
-	.setxattr = limitfs_setxattr,
-	.getxattr = limitfs_getxattr,
-	.listxattr = limitfs_listxattr,
-	.removexattr = limitfs_removexattr,
-#endif
-#ifdef HAVE_LIBULOCKMGR
-	.lock = limitfs_lock,
-#endif
-	.flock = limitfs_flock,
-#ifdef HAVE_COPY_FILE_RANGE
-	.copy_file_range = limitfs_copy_file_range,
-#endif
+// Same order as https://libfuse.github.io/doxygen/structfuse__operations.html
+static struct fuse_operations acfs_oper = {
+	.getattr = acfs_getattr,
+	.readlink = acfs_readlink,
+	.mknod = acfs_mknod,
+	.mkdir = acfs_mkdir,
+	.unlink = acfs_unlink,
+	.rmdir = acfs_rmdir,
+	.symlink = acfs_symlink,
+	.rename = acfs_rename,
+	.link = acfs_link,
+	.chmod = acfs_chmod,
+	.chown = acfs_chown,
+	.truncate = acfs_truncate,
+	.open = acfs_open,
+	.read = acfs_read,
+	.write = acfs_write,
+	.statfs = acfs_statfs,
+	.flush = acfs_flush,
+	.release = acfs_release,
+	.fsync = acfs_fsync,
+	.setxattr = acfs_setxattr,
+	.getxattr = acfs_getxattr,
+	.listxattr = acfs_listxattr,
+	.removexattr = acfs_removexattr,
+	.opendir = acfs_opendir,
+	.readdir = acfs_readdir,
+	.releasedir = acfs_releasedir,
+	// .fsyncdir
+	.init = acfs_init,
+	// .destroy
+	.access = acfs_access,
+	.create = acfs_create,
+	// .lock - posix file locks will be mountpoint-local
+	.utimens = acfs_utimens,
+	// .bmap
+	// .ioctl
+	// .poll
+	.write_buf = acfs_write_buf,
+	.read_buf = acfs_read_buf,
+	.flock = acfs_flock,
+	.fallocate = acfs_fallocate,
+	.copy_file_range = acfs_copy_file_range,
+	// .lseek
 };
 
 static void show_help(const char *progname)
 {
 	printf("usage: %s [options] <mountpoint>\n\n", progname);
 	printf("File-system specific options:\n"
-		"    --usage-limit=<d>   Usage limit in percentage (default: \"80%%\")\n\n");
+		"    -u <d>   --usage-limit=<d>\n"
+		"       Space usage percentage threshold in mounted directory. Default: 80%%\n\n");
 }
 
 static void show_version(const char *progname)
 {
 	printf("%s version: v%s (build with fuse v%d)\n",
 		progname,
-		LIMIT_FS_VERSION,
+		ACFS_VERSION,
 		FUSE_MAJOR_VERSION);
 }
 
@@ -1003,7 +853,7 @@ int main(int argc, char *argv[])
 		assert(fuse_opt_add_arg(&args, "--help") == 0);
 		args.argv[0][0] = '\0';
 
-		ret = fuse_main(args.argc, args.argv, &limitfs_oper, NULL);
+		ret = fuse_main(args.argc, args.argv, &acfs_oper, NULL);
 		fuse_opt_free_args(&args);
 		return ret;
 	}
@@ -1013,14 +863,14 @@ int main(int argc, char *argv[])
 		assert(fuse_opt_add_arg(&args, "--version") == 0);
 		args.argv[0][0] = '\0';
 
-		ret = fuse_main(args.argc, args.argv, &limitfs_oper, NULL);
+		ret = fuse_main(args.argc, args.argv, &acfs_oper, NULL);
 		fuse_opt_free_args(&args);
 		return ret;
 	}
 
 	mountpoint.path = fuse_mnt_resolve_path(strdup(argv[0]), argv[argc - 1]);
 
-	mountpoint.dir = malloc(sizeof(struct limitfs_dirp));
+	mountpoint.dir = malloc(sizeof(struct acfs_dirp));
 	if (mountpoint.dir == NULL)
 		return -ENOMEM;
 
@@ -1037,7 +887,7 @@ int main(int argc, char *argv[])
 	mountpoint.dir->offset = 0;
 	mountpoint.dir->entry = NULL;
 
-	ret = fuse_main(args.argc, args.argv, &limitfs_oper, NULL);
+	ret = fuse_main(args.argc, args.argv, &acfs_oper, NULL);
 	fuse_opt_free_args(&args);
 
 	closedir(mountpoint.dir->dp);

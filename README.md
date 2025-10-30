@@ -1,128 +1,51 @@
-# limit-fs
-FUSE filesystem that removes the oldest files whenever the used space
-reaches the set percentage.
+FUSE auto-cleanup filesystem (acfs)
+===================================
 
-You can use it in a no empty directory, anything you write in will be
-written in the underlying filesystem. After unmounting it all files
-remain in the unmounted directory.
+FUSE overlay filesystem that removes oldest files when used space
+reaches set threshold. Fork of [limit-fs] project.
 
-## How to use
-Once limit-fs is installed running it is very simple:
+Mounts over a directory, to write files through acfs mountpoint to it.\
+When closing an open file on that mp, checks underlying used space against
+threshold, keeps removing files until it's below that, in oldest-mtime-first order.
+
+Different from original limit-fs in simplified project structure
+(just .c + makefile), removed old fuse2 compatibility (and similar macros),
+and added more control over what gets cleaned-up (namely a list of dirs
+to check instead of old files anywhere).
+
+[limit-fs]: https://github.com/piuma/limit-fs
+
+
+# Build / Requirements
+
+Requires [libfuse3] (modern FUSE library) to build and run,
+plus the usual C compiler and [make] for the build.
+
+Run `make` to build `acfs` binary, that's it.
+
+[libfuse3]: https://github.com/libfuse/libfuse
+[make]: https://www.gnu.org/software/make
+
+
+# Usage
+
+Something like: `./acfs /mnt/storage/temp`\
+Then unmount as usual: `umount /mnt/storage/temp`
+
+Always replaces directory with a new mountpoint, so only needs it as a single argument.\
+To access underlying dir at the same time, bind-mount it to multiple places.
+
+Run `./acfs -h` to see acfs-specific options
+(like `-u/--usage-limit` threshold) at the top, with info on their defaults.
+
+If installed along with `mount.acfs` wrapper to PATH, it can be used from
+`/etc/fstab` or systemd mount units same as any other fuse-fs, e.g.:
 ```
-limit-fs [FUSE options] [mount options] mountPoint
-```
-It is _strongly recommended_ to run limit-fs as regular user (not as
-root). For this to work the mount point must be owned by the user.
-
-To unmount the filesystem use `fusermount -u mountpoint`
-
-## Screencast
-
-<a href="https://asciinema.org/a/228205?cols=120&rows=36&speed=1.5" target="_blank"><img src="https://asciinema.org/a/228205.svg" width="410"/></a>
-
-## File-system specific options
-
-You can specify the options:
-
-| long option | short option | default | description |
-|:-:|:-:|:-:|---|
-| --usage-limit=<d> | -u | *80* | set the usage limit in percentage. |
-| --help            | -h |      | print help message |
-| --version         | -V |      | print version |
-
-## Runtime mounting
-```
-limit-fs --usage-limit=90 /mnt/
+acfs /mnt/storage/temp acfs usage-limit=90,uid=myuser,gid=myuser,nofail
 ```
 
-## Mounting automatically at boot time with fstab
+systemd should auto-order that mount after `/mnt/storage`,
+but when using same mountpoint on multiple lines, `x-systemd.after=`
+and similar explicit ordering options can help (from [man systemd.mount]).
 
-Add the FS to the */etc/fstab* file. For example take the line:
-```
-limit-fs   /mnt/tmpfs/limitfs	limit-fs	usage-limit=95,id=1000,gid=1000,user	0 0
-```
-Second part is the mount point which the limit-fs is mounted.
-
-Next use limit-fs in the file system type.
-
-Then comes the options **usage-limit=95,uid=1000,gid=1000,user**
-
-## Mounting automatically at boot time with systemd
-
-The name of file for automatic mounting must reflect the mount point,
-to doesn't make a mistake use the command to compose the name:
-```
-$ systemd-escape -p --suffix=mount /path/to/mount/point
-path-to-mount-point.mount
-```
-Substitute */path/to/mount/point* with the correct mount point. If the
-mount point does not exist at the time of mounting, it is created.
-
- 1. Create the file to setup the mount itself
-
- ```
-# cat > /etc/systemd/system/path-to-mount-point.mount <<EOF
-[Unit]
-Description=limit-fs
-
-[Mount]
-What=limit-fs
-Where=/path/to/mount/point
-Options=usage-limit=95,uid=1000,gid=1005,users
-Type=limit-fs
-
-[Install]
-WantedBy=multi-user.target
-EOF
- ```
-
- 2. Create the file to perform automatic mounting
-
- ```
-# cat > /etc/systemd/system/path-to-mount-point.automount <<EOF
-[Unit]
-Description=Automount limit-fs
-
-[Automount]
-Where=/path/to/mount/point
-
-[Install]
-WantedBy=multi-user.target
-EOF
- ```
-
- 3. Notify systemd there are some new files available
-
- ```
-# systemctl daemon-reload
- ```
-
- 4. Enable the automount
-
- ```
-# systemctl enable path-to-mount-point.automount
- ```
-
-## Installation from source
-
- * Install dependences:
-   - Fedora >= 27
-     ```
-     # dnf install m4 automake autoconf gcc fuse3 fuse3-devel
-     ```
-   - CentOS/RHEL/Fedora
-     ```
-     # yum install m4 automake autoconf gcc fuse fuse-devel
-     ```
-   - Debian
-     ```
-     # apt-get install m4 automake autoconf gcc fuse libfuse-dev pkg-config make
-     ```
-
- * Compile and install
-   ```
-   $ ./setup.sh
-   $ ./configure
-   $ make
-   $ sudo make install
-    ```
+[man systemd.mount]: https://man.archlinux.org/man/systemd.mount.5
