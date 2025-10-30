@@ -10,8 +10,7 @@ threshold, keeps removing files until it's below that, in oldest-mtime-first ord
 
 Different from original limit-fs in simplified project structure
 (just .c + makefile), removed old fuse2 compatibility (and similar macros),
-and more control over what gets cleaned-up (namely a list of dirs to check
-instead of old files anywhere).
+and more control over where cleanup happens (`cleanup-dir` option).
 
 "Used space" above as in "not available to regular user" (`f_blocks - f_bavail`) -
 always counts root-reserved blocks as "used", if filesystem has those.
