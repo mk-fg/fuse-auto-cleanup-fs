@@ -4,6 +4,8 @@ FUSE auto-cleanup filesystem (acfs)
 FUSE overlay filesystem that removes oldest files when used space
 reaches set threshold. Fork of [limit-fs] project.
 
+**It's still a work-in-progress, do not use for anything other than testing.**
+
 Mounts over a directory, to write files through acfs mountpoint to it.\
 When closing an open file on that mp, checks underlying used space against
 threshold, keeps removing files until it's below that, in oldest-mtime-first order.
@@ -11,9 +13,6 @@ threshold, keeps removing files until it's below that, in oldest-mtime-first ord
 Different from original limit-fs in simplified project structure
 (just .c + makefile), removed old fuse2 compatibility (and similar macros),
 and more control over where cleanup happens (`cleanup-dir` option).
-
-"Used space" above as in "not available to regular user" (`f_blocks - f_bavail`) -
-always counts root-reserved blocks as "used", if filesystem has those.
 
 [limit-fs]: https://github.com/piuma/limit-fs
 
@@ -58,5 +57,31 @@ acfs /mnt/storage/temp fuse.acfs usage-limit=90,uid=myuser,gid=myuser,nofail
 systemd should auto-order that mount after `/mnt/storage`,
 but when using same mountpoint on multiple fstab lines, adding `x-systemd.after=`
 and similar explicit ordering options might be useful (from [man systemd.mount]).
+
+All file operations on acfs pass through to underlying directory, but when
+closing open files, it always checks used space there against `usage-limit`,
+and if it's over specified percentage, finds oldest file in `cleanup-dir`
+(same mounted dir by default) and removes it, checks again, repeats as-necessary.
+
+Since used-space checks happen between e.g. sequential file-copy ops,
+make sure that cleanup margin is larger than a single stored file should be.\
+"Used space" above means "not available to regular user" (`f_blocks - f_bavail`) -
+always counts root-reserved blocks as "used", if filesystem has those.
+
+Intended use is file storage destination, where copying more important files
+over will rotate-out less imporant ones under `cleanup-dir`, and files stored
+there can push older ones out as well, thus not normally needing any separate
+cleanup routine, even if amount of files rsync'ed there in one go exceeds total space.
+
+This is not intended to be a general-purpose filesystem to use for e.g. rootfs,
+and can potentially have issues with whatever odd concurrent operation semantics,
+where proxying syscalls in a direct way isn't sufficient for correctness.
+
+Implementation of path traversals in this overlay is definitely insecure,
+so do not use this unless mountpoint directory is only accessible to trusted
+users/processes, only run it with dedicated least-privileged uid/gid,
+maybe in an LSM container (to easily limit access to paths),
+and ideally with symlinks/submounts/special-nodes/etc disabled on underlying
+filesystem entirely.
 
 [man systemd.mount]: https://man.archlinux.org/man/systemd.mount.5

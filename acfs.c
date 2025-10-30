@@ -382,12 +382,12 @@ static int acfs_release(const char *path, struct fuse_file_info *fi) {
 	int res = 0;
 	if (close(fi->fh) == -1) res = -errno;
 	struct statvfs st;
-	if (fstatvfs(acfs_mp.cleanup_fd, &st)) return -errno;
+	if (fstatvfs(acfs_mp.fd, &st)) return -errno;
 	while (100 - (st.f_bavail * 100 / st.f_blocks) > acfs_options.usage_limit) {
 		nftw(acfs_mp.cleanup_path, acfs_cleanup, 500, FTW_MOUNT);
-		if (!acfs_cleanup_oldest[0]) break;
+		if (!acfs_cleanup_oldest[0]) break; // nothing left to cleanup
 		if ( unlinkat(acfs_mp.cleanup_fd, acfs_cleanup_oldest, 0) ||
-			fstatvfs(acfs_mp.cleanup_fd, &st) ) return -errno;
+			fstatvfs(acfs_mp.fd, &st) ) return -errno;
 		acfs_cleanup_oldest[0] = '\0'; acfs_cleanup_mtime = 0; }
 	return res;
 }
