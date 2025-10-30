@@ -10,8 +10,8 @@ threshold, keeps removing files until it's below that, in oldest-mtime-first ord
 
 Different from original limit-fs in simplified project structure
 (just .c + makefile), removed old fuse2 compatibility (and similar macros),
-and added more control over what gets cleaned-up (namely a list of dirs
-to check instead of old files anywhere).
+and more control over what gets cleaned-up (namely a list of dirs to check
+instead of old files anywhere).
 
 [limit-fs]: https://github.com/piuma/limit-fs
 
@@ -33,19 +33,20 @@ Something like: `./acfs /mnt/storage/temp`\
 Then unmount as usual: `umount /mnt/storage/temp`
 
 Always replaces directory with a new mountpoint, so only needs it as a single argument.\
-To access underlying dir at the same time, bind-mount it to multiple places.
+To access underlying dir at the same time, bind-mount it (or its parent dir)
+to multiple places first.
 
 Run `./acfs -h` to see acfs-specific options
 (like `-u/--usage-limit` threshold) at the top, with info on their defaults.
 
 If installed along with `mount.acfs` wrapper to PATH, it can be used from
-`/etc/fstab` or systemd mount units same as any other fuse-fs, e.g.:
+`/etc/fstab` or systemd mount units, same as any other fuse-fs, for example:
 ```
 acfs /mnt/storage/temp acfs usage-limit=90,uid=myuser,gid=myuser,nofail
 ```
 
 systemd should auto-order that mount after `/mnt/storage`,
-but when using same mountpoint on multiple lines, `x-systemd.after=`
-and similar explicit ordering options can help (from [man systemd.mount]).
+but when using same mountpoint on multiple fstab lines, adding `x-systemd.after=`
+and similar explicit ordering options might be useful (from [man systemd.mount]).
 
 [man systemd.mount]: https://man.archlinux.org/man/systemd.mount.5
