@@ -92,3 +92,50 @@ so do not use this overlay unless that directory is only accessible to trusted
 users/processes, only run it with dedicated least-privileged uid/gid,
 maybe in an LSM profile (to easily restrict access to one path), and ideally with
 symlinks/submounts/special-nodes/etc blocked on underlying filesystem entirely.
+
+
+# Links
+
+- [limit-fs] - predecessor of this project.
+
+    Forked it after noticing many issues with the code - obviously broken operations
+    (e.g. self-recursively using paths on overlay), broken option parsing, unfinished stuff,
+    very suboptimal and inflexible cleanup.
+
+- [rotatefs] - similar to limit-fs, but a bit older, with many of the same issues.
+
+- [example/passthrough_fh.c from libfuse] - base for [limit-fs] and many similar projects.
+
+- [logrotate] - common well-known tool for cleaning up dirs of append-only log files.
+
+    There are also more dynamic tools like [log_proxy] or [systemd-journal] for
+    managing log files and streams without running out of storage space.
+
+- [systemd-tmpfiles] - auto-enabled tool that comes with systemd to cleanup tmpfs files.
+
+- [check-df cron-script] - what I use for general running-out-of-space monitoring.
+
+    Runs basic "df" on all connected disks and emits stderr warnings with error exit,
+    which cron daemon or [systemd.timer] service OnFailure= hook will email report for.
+
+- `find /mnt/storage/temp -xdev -depth -mtime +30 -delete` can be a simple
+  "delete stuff older than 30d" cleanup-command too.
+
+- [rmlint], [rdfind] - manual cleanup tools focused on specific disk-usage pathologies.
+
+- [BleachBit], [czkawka], [FSlint] - GUI/desktop manual disk-cleanup tools.
+
+[rotatefs]: https://github.com/frt/rotatefs
+[example/passthrough_fh.c from libfuse]:
+  https://github.com/libfuse/libfuse/blob/master/example/passthrough_fh.c
+[logrotate]: https://github.com/logrotate/logrotate
+[log_proxy]: https://github.com/metwork-framework/log_proxy
+[systemd-journal]: https://man.archlinux.org/man/core/systemd/systemd-journald.8.en
+[systemd-tmpfiles]: https://man.archlinux.org/man/core/systemd/systemd-tmpfiles.8.en
+[check-df cron-script]: https://github.com/mk-fg/fgtk/blob/master/cron-checks/df
+[systemd.timer]: https://man.archlinux.org/man/systemd.timer.5
+[rmlint]: https://github.com/sahib/rmlint
+[rdfind]: https://github.com/pauldreik/rdfind
+[BleachBit]: https://www.bleachbit.org/
+[czkawka]: https://github.com/qarmin/czkawka
+[FSlint]: https://www.pixelbeat.org/fslint/
