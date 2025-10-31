@@ -1,9 +1,11 @@
-/* FUSE: Filesystem in Userspace
-	Copyright (C) 2001-2007 Miklos Szeredi <miklos@szeredi.hu>
-	Copyright (C) 2011 Sebastian Pipping <sebastian@pipping.org>
-	Copyright (C) 2019 Danilo Abbasciano <danilo@piumalab.org>
-	Copyright (C) 2025 Mike Kazantsev
-	This program can be distributed under the terms of the GNU GPL. See COPYING file. */
+// Copyright (C) 2001-2007 Miklos Szeredi <miklos@szeredi.hu>
+// Copyright (C) 2011 Sebastian Pipping <sebastian@pipping.org>
+// Copyright (C) 2019 Danilo Abbasciano <danilo@piumalab.org>
+// Copyright (C) 2025 Mike Kazantsev
+// This program can be distributed under the terms of the GNU GPL. See COPYING file.
+//
+// Build: gcc -I/usr/include/fuse3 -lfuse3 -Wall -O2 -o acfs acfs.c
+// Usage info: ./acfs -h
 
 #define ACFS_VERSION "1.0"
 #define FUSE_USE_VERSION 31
@@ -30,26 +32,36 @@
 #include <libgen.h>
 
 
-struct acfs_dirp {
-	DIR *dp;
-	struct dirent *entry;
-	off_t offset;
-};
+struct acfs_dirp { DIR *dp; struct dirent *entry; off_t offset; };
+struct acfs_rmfile { time_t ts; char *fn; };
 
 static struct acfs_mp {
 	int fd;
 	struct acfs_dirp *dir;
 	char *path;
-	char *cleanup_path;
-	int cleanup_fd;
-	pthread_mutex_t cleanup_mutex;
 } acfs_mp;
 
-static struct acfs_options {
-	int usage_limit;
+static struct acfs_clean {
+	char *path;
+	int fd;
+	pthread_mutex_t mutex;
+	int prefixlen;
+	int buff_n;
+	int buff_hwm;
+	bool buff_sorted;
+	struct acfs_rmfile *buff;
+} acfs_clean;
+
+static struct acfs_opts {
+	int usage_hwm;
+	int usage_lwm;
 	char *cleanup_dir;
-} acfs_options;
-int acfs_opts_def_usage_limit = 90;
+	int cleanup_buff_sz;
+} acfs_opts;
+
+int acfs_opts_def_usage_hwm = 90;
+int acfs_opts_def_usage_lwm_diff = 5;
+int acfs_opts_def_cbuff_sz = 50;
 
 
 #define acfs_log(fmt, arg...) // fuse_log_debug seem to spam stderr without -d, not sure why
@@ -67,44 +79,93 @@ int acfs_opts_def_usage_limit = 90;
 /* return (int) syscall(SYS_openat2, acfs_mp.fd, path, how, sizeof(struct open_how)); */
 
 
-int acfs_cleanup_prefixlen = 0;
-char acfs_cleanup_oldest[PATH_MAX+1] = {0};
-time_t acfs_cleanup_mtime = 0;
+static int acfs_cleanup_cmp(const void *p1, const void *p2) {
+	const struct acfs_rmfile *f1 = p1, *f2 = p2;
+	if (!f1->fn && f2->fn) return 1;
+	if (f1->fn && !f2->fn) return -1;
+	return f1->ts == f2->ts ? 0 : (f1->ts < f2->ts ? -1 : 1); }
 
-int acfs_cleanup_cb(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf) {
-	// Sanity-checks that returned path is absolute one starting with cleanup_path,
-	//  but assumes there won't be a double-slash or /../ returned by nftw() after that.
-	if (typeflag != FTW_F || (acfs_cleanup_mtime && acfs_cleanup_mtime <= sb->st_mtime)) return 0;
-	if (strncmp(fpath, acfs_mp.cleanup_path, acfs_cleanup_prefixlen)) return 0;
-	acfs_cleanup_mtime = sb->st_mtime;
-	strncpy(acfs_cleanup_oldest, fpath + acfs_cleanup_prefixlen + 1, PATH_MAX);
-	return 0;
+static int acfs_cleanup_cb(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf) {
+	if (typeflag != FTW_F) goto end;
+	// Keeps 1*sz in buff qsort'ed, and up to .5*sz tail for entries with ts < buff[sz].ts
+	// Sorts when buffer fills-up, discarding tail entries after buff[sz] (with newest ts)
+	struct acfs_rmfile *rmf = acfs_clean.buff_sorted ?
+		acfs_clean.buff + acfs_opts.cleanup_buff_sz : NULL;
+	time_t ts_last = rmf ? rmf->ts : 0;
+	if (ts_last && ts_last <= sb->st_mtime) goto end;
+	// Sanity-checks that returned path is absolute one starting with acfs_clean.path,
+	//   but assumes there won't be a double-slash or /../ returned by nftw() after that.
+	if (strncmp(fpath, acfs_clean.path, acfs_clean.prefixlen)) goto end;
+
+	if (acfs_clean.buff_n >= acfs_clean.buff_hwm) { // sort, discard tail
+		qsort( acfs_clean.buff, acfs_clean.buff_hwm,
+			sizeof(struct acfs_rmfile), acfs_cleanup_cmp );
+		acfs_clean.buff_n = acfs_opts.cleanup_buff_sz;
+		acfs_clean.buff_sorted = true;
+		for (int n = acfs_clean.buff_n; n < acfs_clean.buff_hwm; n++) {
+			rmf = acfs_clean.buff + n; if (rmf->fn) free(rmf->fn); } }
+
+	rmf = acfs_clean.buff + acfs_clean.buff_n;
+	int fn_sz = strlen(fpath + acfs_clean.prefixlen); // prefix-/ will free 1B for \0
+	rmf->ts = sb->st_mtime; if (!(rmf->fn = malloc(fn_sz))) return FTW_STOP;
+	strncpy(rmf->fn, fpath + acfs_clean.prefixlen + 1, fn_sz);
+	acfs_clean.buff_n++;
+	end: return FTW_CONTINUE;
 }
 
-static int acfs_cleanup() {
-	int res = 0; struct statvfs st;
+static int acfs_cleanup_du() {
+	struct statvfs st;
 	if (fstatvfs(acfs_mp.fd, &st)) return -errno;
-	while (100 - (st.f_bavail * 100 / st.f_blocks) > acfs_options.usage_limit) {
-		if (pthread_mutex_lock(&acfs_mp.cleanup_mutex)) return -errno;
-		acfs_cleanup_prefixlen = strlen(acfs_mp.cleanup_path);
+	return 100 - (st.f_bavail * 100 / st.f_blocks); }
+
+static int acfs_cleanup() {
+	int du, res = 0;
+	if ((du = acfs_cleanup_du()) < 0) return du;
+	if (du < acfs_opts.usage_hwm) return res;
+
+	if (!acfs_clean.buff) {
+		acfs_clean.buff_hwm = 3 * acfs_opts.cleanup_buff_sz / 2;
+		acfs_clean.buff = calloc(acfs_clean.buff_hwm, sizeof(struct acfs_rmfile));
+		if (!acfs_clean.buff) return -ENOMEM; }
+
+	while (du > acfs_opts.usage_lwm) {
+		if (pthread_mutex_lock(&acfs_clean.mutex)) return -errno;
+		acfs_clean.prefixlen = strlen(acfs_clean.path);
+		int n = 0; struct acfs_rmfile *rmf;
+
 		// FTW_PHYS is fine here because nftw uses path and this overlay anyway
-		nftw(acfs_mp.cleanup_path, acfs_cleanup_cb, 500, FTW_MOUNT | FTW_PHYS);
-		if (acfs_cleanup_oldest[0]) {
+		if (nftw( acfs_clean.path, acfs_cleanup_cb,
+				500, FTW_MOUNT | FTW_PHYS | FTW_ACTIONRETVAL ) == FTW_STOP) {
+			res = -ENOMEM; goto buff_cleanup; }
+		if (!acfs_clean.buff_n) goto skip;
+
+		qsort( acfs_clean.buff, acfs_clean.buff_n,
+			sizeof(struct acfs_rmfile), acfs_cleanup_cmp );
+		for (; n < acfs_clean.buff_n; n++) {
 			char *dir = "";
-			acfs_log("cleanup: rm [ %s ]", acfs_cleanup_oldest);
-			if (unlinkat(acfs_mp.cleanup_fd, acfs_cleanup_oldest, 0)) res = -errno;
-			else dir = dirname(acfs_cleanup_oldest);
+			rmf = acfs_clean.buff + n;
+			acfs_log("cleanup: rm [ %s ]", rmf->fn);
+			if (unlinkat(acfs_clean.fd, rmf->fn, 0)) res = -errno;
+			else dir = dirname(rmf->fn);
 			// Try to remove empty parent dirs up to cleanup_fd or symlinks in path
 			while (dir[0] && dir[0] != '.' && dir[0] != '/') {
 				acfs_log("cleanup: rmdir [ %s ]", dir);
-				if (unlinkat(acfs_mp.cleanup_fd, dir, AT_REMOVEDIR)) {
+				if (unlinkat(acfs_clean.fd, dir, AT_REMOVEDIR)) {
 					if (errno != ENOTEMPTY) res = -errno;
 					break; }
-				dir = dirname(dir); } }
-		acfs_cleanup_oldest[0] = acfs_cleanup_mtime = 0;
-		if (pthread_mutex_unlock(&acfs_mp.cleanup_mutex)) return -errno;
-		if (!acfs_cleanup_oldest[0]) { acfs_log("cleanup: no files found"); break; }
-		if (fstatvfs(acfs_mp.fd, &st)) return -errno; }
+				dir = dirname(dir); }
+			free(rmf->fn);
+			if ((du = acfs_cleanup_du()) <= acfs_opts.usage_lwm) break; }
+
+		buff_cleanup:
+		for (; n < acfs_clean.buff_n; n++) free(acfs_clean.buff[n].fn);
+		acfs_clean.buff_sorted = false;
+
+		skip:
+		if (pthread_mutex_unlock(&acfs_clean.mutex)) return -errno;
+		if (!acfs_clean.buff_n) { acfs_log("cleanup: no files found"); break; }
+		acfs_clean.buff_n = 0;
+		if ((res = res ? res : du < 0 ? du : res)) break; }
 	return res;
 }
 
@@ -456,16 +517,27 @@ char *fuse_mnt_resolve_path(const char *progname, const char *orig) {
 }
 
 
-#define ACFS_OPT(t, p) { t, offsetof(struct acfs_options, p), 1 }
+#define ACFS_OPT(t, p) { t, offsetof(struct acfs_opts, p), 1 }
 enum { ACFS_KEY_HELP, ACFS_KEY_VERSION };
 static const struct fuse_opt option_spec[] = {
-	ACFS_OPT("-u %d", usage_limit),
-	ACFS_OPT("-u=%d", usage_limit),
-	ACFS_OPT("--usage-limit %d", usage_limit),
-	ACFS_OPT("--usage-limit=%d", usage_limit),
-	ACFS_OPT("usage-limit=%d", usage_limit),
+	ACFS_OPT("usage-limit=%d", usage_hwm),
+	ACFS_OPT("-u %d", usage_hwm),
+	ACFS_OPT("-u=%d", usage_hwm),
+	ACFS_OPT("--usage-limit %d", usage_hwm),
+	ACFS_OPT("--usage-limit=%d", usage_hwm),
+
+	ACFS_OPT("usage-lwm=%d", usage_lwm),
+	ACFS_OPT("-U %d", usage_lwm),
+	ACFS_OPT("-U=%d", usage_lwm),
+	ACFS_OPT("--usage-lwm %d", usage_lwm),
+	ACFS_OPT("--usage-lwm=%d", usage_lwm),
+
 	ACFS_OPT("cleanup-dir=%s", cleanup_dir),
 	ACFS_OPT("--cleanup-dir=%s", cleanup_dir),
+
+	ACFS_OPT("cleanup-buff-sz=%d", cleanup_buff_sz),
+	ACFS_OPT("--cleanup-buff-sz=%d", cleanup_buff_sz),
+
 	FUSE_OPT_KEY("-V", ACFS_KEY_VERSION),
 	FUSE_OPT_KEY("--version", ACFS_KEY_VERSION),
 	FUSE_OPT_KEY("-h", ACFS_KEY_HELP),
@@ -479,13 +551,20 @@ static int acfs_opt_proc(void *data, const char *arg, int key, struct fuse_args 
 			fuse_main(args->argc, args->argv, &acfs_ops, NULL);
 			printf(
 				"\nACFS filesystem-specific options (usable as `-o <opt>=<value>` in mount/fstab):\n"
-				"    -u <d>   --usage-limit=<d>\n"
-				"       Used space percentage threshold in mounted directory. Default: %d%%\n"
+				"    -u <percentage>   --usage-limit=<percentage>\n"
+				"       Used space percentage threshold to cleanup mounted directory. Default: %d%%\n"
+				"    -U <percentage>   --usage-lwm=<percentage>\n"
+				"       Used-space%% to cleanup down to after it reaches usage-limit.\n"
+				"       Default: %d%% under usage-limit, unless specified with this option.\n"
 				"    --cleanup-dir=<path>\n"
 				"       Directory to lookup for files to remove. Default is to use mounted dir.\n"
 				"       Path can either be absolute or relative to the mounted dir, must be on same fs.\n"
-				"       Symlinks in this dir are also only navigated within filesystem.\n\n",
-				acfs_opts_def_usage_limit );
+				"       Symlinks in this dir are also only navigated within filesystem.\n"
+				"    --cleanup-buff-sz=<n>\n"
+				"       How many oldest-mtime cleanup-candidate files to find in one cleanup-dir scan.\n"
+				"       Should be set above typical number of files to remove to get disk usage from\n"
+				"        usage-limit%% down to usage-lwm%%, depending on average file sizes. Default: %d\n\n",
+				acfs_opts_def_usage_hwm, acfs_opts_def_usage_lwm_diff, acfs_opts_def_cbuff_sz );
 			exit(1);
 		case ACFS_KEY_VERSION:
 			printf("acfs version %s\n", ACFS_VERSION);
@@ -498,8 +577,13 @@ int main(int argc, char *argv[]) {
 	struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
 	umask(0);
 
-	acfs_options.usage_limit = acfs_opts_def_usage_limit;
-	if (fuse_opt_parse(&args, &acfs_options, option_spec, acfs_opt_proc) == -1) return 1;
+	acfs_opts.usage_hwm = acfs_opts_def_usage_hwm;
+	acfs_opts.usage_lwm = 0;
+	acfs_opts.cleanup_buff_sz = acfs_opts_def_cbuff_sz;
+	if (fuse_opt_parse(&args, &acfs_opts, option_spec, acfs_opt_proc) == -1) return 1;
+	if (!acfs_opts.usage_lwm)
+		acfs_opts.usage_lwm = acfs_opts.usage_hwm - acfs_opts_def_usage_lwm_diff;
+	if (acfs_opts.cleanup_buff_sz < 2) errx(1, "ERROR: cleanup-buff-sz must be >1");
 	if (args.argc == 3 || args.argc == 5) {
 		// Remove "device" argument in "mount -t fuse.acfs ..." with/without "-o" "<opts>"
 		args.argc--; args.argv[args.argc-1] = args.argv[args.argc]; }
@@ -515,30 +599,26 @@ int main(int argc, char *argv[]) {
 	acfs_mp.dir->offset = 0;
 	acfs_mp.dir->entry = NULL;
 
-	acfs_mp.cleanup_path = acfs_mp.path;
-	acfs_mp.cleanup_fd = acfs_mp.fd;
-	if (acfs_options.cleanup_dir) {
+	acfs_clean.path = acfs_mp.path;
+	acfs_clean.fd = acfs_mp.fd;
+	if (acfs_opts.cleanup_dir) {
 		char *cwd = realpath(get_current_dir_name(), NULL);
 		if ( chdir(acfs_mp.path) ||
-				!(acfs_mp.cleanup_path = realpath(acfs_options.cleanup_dir, NULL)) || chdir(cwd) )
-			err(1, "ERROR: cleanup-dir resolve [ %s ]", acfs_options.cleanup_dir);
-		acfs_mp.cleanup_fd = openat( acfs_mp.fd,
-			acfs_mp.cleanup_path, O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOCTTY );
-		if (acfs_mp.cleanup_fd < 0)
-			err(1, "ERROR: cleanup-dir open [ %s ]", acfs_mp.cleanup_path);
+				!(acfs_clean.path = realpath(acfs_opts.cleanup_dir, NULL)) || chdir(cwd) )
+			err(1, "ERROR: cleanup-dir resolve [ %s ]", acfs_opts.cleanup_dir);
+		acfs_clean.fd = openat( acfs_mp.fd,
+			acfs_clean.path, O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOCTTY );
+		if (acfs_clean.fd < 0)
+			err(1, "ERROR: cleanup-dir open [ %s ]", acfs_clean.path);
 		free(cwd); }
-	pthread_mutex_init(&acfs_mp.cleanup_mutex, NULL);
+	pthread_mutex_init(&acfs_clean.mutex, NULL);
 
 	struct statvfs st;
-	if (fstatvfs(acfs_mp.cleanup_fd, &st) || !st.f_blocks)
+	if (fstatvfs(acfs_clean.fd, &st) || !st.f_blocks)
 		errx(1, "ERROR: Failed to check space usage in cleanup-dir");
 	unsigned long st_fsid = st.f_fsid;
 	if (fstatvfs(acfs_mp.fd, &st)) err(1, "ERROR: mountpoint statvfs");
 	if (st_fsid != st.f_fsid) errx(1, "ERROR: cleanup-dir is not same-fs as mountpoint");
 
-	int res = fuse_main(args.argc, args.argv, &acfs_ops, NULL);
-	fuse_opt_free_args(&args);
-	closedir(acfs_mp.dir->dp);
-	free(acfs_mp.path);
-	return res;
+	return fuse_main(args.argc, args.argv, &acfs_ops, NULL);
 }
