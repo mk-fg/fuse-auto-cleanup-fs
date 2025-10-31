@@ -49,22 +49,6 @@ static struct acfs_options {
 int acfs_opts_def_usage_limit = 90;
 
 
-static void *acfs_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {
-	cfg->use_ino = 1;
-	cfg->nullpath_ok = 1;
-	/* Pick up changes from lower filesystem right away. This is
-		also necessary for better hardlink support. When the kernel
-		calls the unlink() handler, it does not know the inode of
-		the to-be-removed entry and can therefore not invalidate
-		the cache of the associated inode - resulting in an incorrect
-		st_nlink value being reported for remaining hardlinks to this inode. */
-	cfg->entry_timeout = 0;
-	cfg->attr_timeout = 0;
-	cfg->negative_timeout = 0;
-	return NULL;
-}
-
-
 #define path_rel(p, rp) char rp[strlen(p)+2]; rp[0] = '.'; strcpy(rp+1, p);
 #define return_op(op) return op == -1 ? -errno : 0;
 #define return_op_fd(path, flags, op) \
@@ -78,15 +62,40 @@ static void *acfs_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {
 /* return (int) syscall(SYS_openat2, acfs_mp.fd, path, how, sizeof(struct open_how)); */
 
 
+char acfs_cleanup_oldest[PATH_MAX+1] = {0};
+time_t acfs_cleanup_mtime = 0;
+int acfs_cleanup_cb(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf) {
+	if (typeflag != FTW_F || (acfs_cleanup_mtime && acfs_cleanup_mtime < sb->st_mtime)) return 0;
+	acfs_cleanup_mtime = sb->st_mtime;
+	strncpy(acfs_cleanup_oldest, fpath + ftwbuf->base, PATH_MAX);
+	return 0;
+}
+
+static int acfs_release(const char *path, struct fuse_file_info *fi) {
+	// XXX: add locking around this for threads
+	int res = 0;
+	if (close(fi->fh) == -1) res = -errno;
+	struct statvfs st;
+	if (fstatvfs(acfs_mp.fd, &st)) return -errno;
+	while (100 - (st.f_bavail * 100 / st.f_blocks) > acfs_options.usage_limit) {
+		nftw(acfs_mp.cleanup_path, acfs_cleanup_cb, 500, FTW_MOUNT);
+		if (!acfs_cleanup_oldest[0]) break; // nothing left to cleanup
+		// XXX: try removing parent dir after unlink, if empty
+		if ( unlinkat(acfs_mp.cleanup_fd, acfs_cleanup_oldest, 0) ||
+			fstatvfs(acfs_mp.fd, &st) ) return -errno;
+		acfs_cleanup_oldest[0] = '\0'; acfs_cleanup_mtime = 0; }
+	return res;
+}
+
+
+// Except for init and acfs_release, which does extra cleanup work,
+//  all other calls below are defined in fuse_operations/acfs_ops order.
+// Implementation is heavily derived from libfuse/example/passthrough_fh.c
+
 static int acfs_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi) {
 	if (fi) return_op(fstat(fi->fh, stbuf));
 	path_rel(path, rp);
 	return_op(fstatat(acfs_mp.fd, rp, stbuf, AT_SYMLINK_NOFOLLOW));
-}
-
-static int acfs_access(const char *path, int mask) {
-	path_rel(path, rp);
-	return_op(faccessat(acfs_mp.fd, rp, mask, AT_EACCESS));
 }
 
 static int acfs_readlink(const char *path, char *buf, size_t size) {
@@ -96,6 +105,85 @@ static int acfs_readlink(const char *path, char *buf, size_t size) {
 	buf[res] = '\0';
 	return 0;
 }
+
+static int acfs_mknod(const char *path, mode_t mode, dev_t rdev) {
+	if (S_ISFIFO(mode)) return_op(mkfifo(path, mode));
+	return_op(mknod(path, mode, rdev)); }
+
+static int acfs_mkdir(const char *path, mode_t mode) {
+	path_rel(path, rp);
+	return_op(mkdirat(acfs_mp.fd, rp, mode)); }
+
+static int acfs_unlink(const char *path) {
+	path_rel(path, rp);
+	return_op(unlinkat(acfs_mp.fd, rp, 0)); }
+
+static int acfs_rmdir(const char *path) {
+	path_rel(path, rp);
+	return_op(unlinkat(acfs_mp.fd, rp, AT_REMOVEDIR)); }
+
+static int acfs_symlink(const char *from, const char *to) {
+	path_rel(to, rp);
+	return_op(symlinkat(from, acfs_mp.fd, rp)); }
+
+static int acfs_rename(const char *from, const char *to, unsigned int flags) {
+	path_rel(from, rp_from); path_rel(to, rp_to);
+	return_op(renameat2(acfs_mp.fd, rp_from, acfs_mp.fd, rp_to, flags)); }
+
+static int acfs_link(const char *from, const char *to) {
+	path_rel(from, rp_from); path_rel(to, rp_to);
+	return_op(linkat(acfs_mp.fd, rp_from, acfs_mp.fd, rp_to, AT_SYMLINK_FOLLOW)); }
+
+static int acfs_chmod(const char *path, mode_t mode, struct fuse_file_info *fi) {
+	if (fi) return_op(fchmod(fi->fh, mode));
+	path_rel(path, rp);
+	return_op(fchmodat(acfs_mp.fd, rp, mode, 0)); }
+
+static int acfs_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi) {
+	if (fi) return_op(fchown(fi->fh, uid, gid));
+	path_rel(path, rp);
+	return_op(fchownat(acfs_mp.fd, rp, uid, gid, AT_SYMLINK_NOFOLLOW)); }
+
+static int acfs_truncate(const char *path, off_t size, struct fuse_file_info *fi) {
+	if (fi) return_op(ftruncate(fi->fh, size));
+	path_rel(path, rp);
+	int fd = openat(acfs_mp.fd, rp, O_WRONLY); if (fd < 0) return -errno;
+	int res = ftruncate(fd, size); close(fd); return res;
+}
+
+static int acfs_open(const char *path, struct fuse_file_info *fi) {
+	path_rel(path, rp);
+	int fd = openat(acfs_mp.fd, rp, fi->flags);
+	if (fd == -1) return -errno;
+	if (fi->flags & O_DIRECT) {
+		fi->direct_io = 1;
+		fi->parallel_direct_writes = 1; }
+	fi->fh = fd;
+	return 0;
+}
+
+static int acfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
+	return_op(pread(fi->fh, buf, size, offset)); }
+
+static int acfs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
+	return_op(pwrite(fi->fh, buf, size, offset)); }
+
+static int acfs_statfs(const char *path, struct statvfs *stbuf) { return_op(fstatvfs(acfs_mp.fd, stbuf)); }
+static int acfs_flush(const char *path, struct fuse_file_info *fi) { return_op(close(dup(fi->fh))); }
+// acfs_release - special definition with oldest-file-cleanup at the top
+
+static int acfs_fsync(const char *path, int isdatasync, struct fuse_file_info *fi) {
+	if (isdatasync) return_op(fdatasync(fi->fh));
+	return_op(fsync(fi->fh)); }
+
+static int acfs_setxattr(const char *path, const char *name, const char *value, size_t size, int flags) {
+	return_op_fd(path, 0, fsetxattr(fd, name, value, size, flags)); }
+static int acfs_getxattr(const char *path, const char *name, char *value, size_t size) {
+	return_op_fd(path, 0, fgetxattr(fd, name, value, size)); }
+static int acfs_listxattr(const char *path, char *list, size_t size) {
+	return_op_fd(path, 0, flistxattr(fd, list, size)); }
+static int acfs_removexattr(const char *path, const char *name) {
+	return_op_fd(path, 0, fremovexattr(fd, name)); }
 
 static int acfs_opendir(const char *path, struct fuse_file_info *fi) {
 	int res;
@@ -126,7 +214,7 @@ static int acfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	while (1) {
 		struct stat st;
 		off_t nextoff;
-		enum fuse_fill_dir_flags fill_flags = 0;
+		enum fuse_fill_dir_flags fill_flags = FUSE_FILL_DIR_DEFAULTS;
 		if (!d->entry) {
 			d->entry = readdir(d->dp);
 			if (!d->entry) break; }
@@ -153,65 +241,9 @@ static int acfs_releasedir(const char *path, struct fuse_file_info *fi) {
 	return 0;
 }
 
-static int acfs_mknod(const char *path, mode_t mode, dev_t rdev) {
-	if (S_ISFIFO(mode)) return_op(mkfifo(path, mode));
-	return_op(mknod(path, mode, rdev));
-}
-
-static int acfs_mkdir(const char *path, mode_t mode) {
+static int acfs_access(const char *path, int mask) {
 	path_rel(path, rp);
-	return_op(mkdirat(acfs_mp.fd, rp, mode));
-}
-
-static int acfs_unlink(const char *path) {
-	path_rel(path, rp);
-	return_op(unlinkat(acfs_mp.fd, rp, 0));
-}
-
-static int acfs_rmdir(const char *path) {
-	path_rel(path, rp);
-	return_op(unlinkat(acfs_mp.fd, rp, AT_REMOVEDIR));
-}
-
-static int acfs_symlink(const char *from, const char *to) {
-	path_rel(to, rp);
-	return_op(symlinkat(from, acfs_mp.fd, rp));
-}
-
-static int acfs_rename(const char *from, const char *to, unsigned int flags) {
-	path_rel(from, rp_from); path_rel(to, rp_to);
-	return_op(renameat2(acfs_mp.fd, rp_from, acfs_mp.fd, rp_to, flags));
-}
-
-static int acfs_link(const char *from, const char *to) {
-	path_rel(from, rp_from); path_rel(to, rp_to);
-	return_op(linkat(acfs_mp.fd, rp_from, acfs_mp.fd, rp_to, AT_SYMLINK_FOLLOW));
-}
-
-static int acfs_chmod(const char *path, mode_t mode, struct fuse_file_info *fi) {
-	if (fi) return_op(fchmod(fi->fh, mode));
-	path_rel(path, rp);
-	return_op(fchmodat(acfs_mp.fd, rp, mode, 0));
-}
-
-static int acfs_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi) {
-	if (fi) return_op(fchown(fi->fh, uid, gid));
-	path_rel(path, rp);
-	return_op(fchownat(acfs_mp.fd, rp, uid, gid, AT_SYMLINK_NOFOLLOW));
-}
-
-static int acfs_truncate(const char *path, off_t size, struct fuse_file_info *fi) {
-	if (fi) return_op(ftruncate(fi->fh, size));
-	path_rel(path, rp);
-	int fd = openat(acfs_mp.fd, rp, O_WRONLY); if (fd < 0) return -errno;
-	int res = ftruncate(fd, size); close(fd); return res;
-}
-
-static int acfs_utimens(const char *path, const struct timespec ts[2], struct fuse_file_info *fi) {
-	if (fi) return_op(futimens(fi->fh, ts));
-	path_rel(path, rp);
-	return_op(utimensat(acfs_mp.fd, rp, ts, AT_SYMLINK_NOFOLLOW));
-}
+	return_op(faccessat(acfs_mp.fd, rp, mask, AT_EACCESS)); }
 
 static int acfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
 	path_rel(path, rp);
@@ -221,19 +253,18 @@ static int acfs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	return 0;
 }
 
-static int acfs_open(const char *path, struct fuse_file_info *fi) {
+static int acfs_utimens(const char *path, const struct timespec ts[2], struct fuse_file_info *fi) {
+	if (fi) return_op(futimens(fi->fh, ts));
 	path_rel(path, rp);
-	int fd = openat(acfs_mp.fd, rp, fi->flags);
-	if (fd == -1) return -errno;
-	if (fi->flags & O_DIRECT) {
-		fi->direct_io = 1;
-		fi->parallel_direct_writes = 1; }
-	fi->fh = fd;
-	return 0;
+	return_op(utimensat(acfs_mp.fd, rp, ts, AT_SYMLINK_NOFOLLOW));
 }
 
-static int acfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
-	return_op(pread(fi->fh, buf, size, offset));
+static int acfs_write_buf(const char *path, struct fuse_bufvec *buf, off_t offset, struct fuse_file_info *fi) {
+	struct fuse_bufvec dst = FUSE_BUFVEC_INIT(fuse_buf_size(buf));
+	dst.buf[0].flags = FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK;
+	dst.buf[0].fd = fi->fh;
+	dst.buf[0].pos = offset;
+	return fuse_buf_copy(&dst, buf, FUSE_BUF_SPLICE_NONBLOCK);
 }
 
 static int acfs_read_buf(const char *path, struct fuse_bufvec **bufp, size_t size, off_t offset, struct fuse_file_info *fi) {
@@ -248,48 +279,7 @@ static int acfs_read_buf(const char *path, struct fuse_bufvec **bufp, size_t siz
 	return 0;
 }
 
-static int acfs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
-	return_op(pwrite(fi->fh, buf, size, offset));
-}
-
-static int acfs_write_buf(const char *path, struct fuse_bufvec *buf, off_t offset, struct fuse_file_info *fi) {
-	struct fuse_bufvec dst = FUSE_BUFVEC_INIT(fuse_buf_size(buf));
-	dst.buf[0].flags = FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK;
-	dst.buf[0].fd = fi->fh;
-	dst.buf[0].pos = offset;
-	return fuse_buf_copy(&dst, buf, FUSE_BUF_SPLICE_NONBLOCK);
-}
-
-static int acfs_statfs(const char *path, struct statvfs *stbuf) { return_op(fstatvfs(acfs_mp.fd, stbuf)); }
-static int acfs_flush(const char *path, struct fuse_file_info *fi) { return_op(close(dup(fi->fh))); }
-
-char acfs_cleanup_oldest[PATH_MAX+1] = {0};
-time_t acfs_cleanup_mtime = 0;
-int acfs_cleanup_cb(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf) {
-	if (typeflag != FTW_F || (acfs_cleanup_mtime && acfs_cleanup_mtime < sb->st_mtime)) return 0;
-	acfs_cleanup_mtime = sb->st_mtime;
-	strncpy(acfs_cleanup_oldest, fpath + ftwbuf->base, PATH_MAX);
-	return 0;
-}
-
-static int acfs_release(const char *path, struct fuse_file_info *fi) {
-	int res = 0;
-	if (close(fi->fh) == -1) res = -errno;
-	struct statvfs st;
-	if (fstatvfs(acfs_mp.fd, &st)) return -errno;
-	while (100 - (st.f_bavail * 100 / st.f_blocks) > acfs_options.usage_limit) {
-		nftw(acfs_mp.cleanup_path, acfs_cleanup_cb, 500, FTW_MOUNT);
-		if (!acfs_cleanup_oldest[0]) break; // nothing left to cleanup
-		if ( unlinkat(acfs_mp.cleanup_fd, acfs_cleanup_oldest, 0) ||
-			fstatvfs(acfs_mp.fd, &st) ) return -errno;
-		acfs_cleanup_oldest[0] = '\0'; acfs_cleanup_mtime = 0; }
-	return res;
-}
-
-static int acfs_fsync(const char *path, int isdatasync, struct fuse_file_info *fi) {
-	if (isdatasync) return_op(fdatasync(fi->fh));
-	return_op(fsync(fi->fh));
-}
+static int acfs_flock(const char *path, struct fuse_file_info *fi, int op) { return_op(flock(fi->fh, op)); }
 
 static int acfs_fallocate(const char *path, int mode, off_t offset, off_t length, struct fuse_file_info *fi) {
 	if (mode) return -EOPNOTSUPP;
@@ -298,17 +288,6 @@ static int acfs_fallocate(const char *path, int mode, off_t offset, off_t length
 	int fd = openat(acfs_mp.fd, rp, O_WRONLY); if (fd < 0) return -errno;
 	int res = -posix_fallocate(fd, offset, length); close(fd); return res;
 }
-
-static int acfs_getxattr(const char *path, const char *name, char *value, size_t size) {
-	return_op_fd(path, 0, fgetxattr(fd, name, value, size)); }
-static int acfs_listxattr(const char *path, char *list, size_t size) {
-	return_op_fd(path, 0, flistxattr(fd, list, size)); }
-static int acfs_setxattr(const char *path, const char *name, const char *value, size_t size, int flags) {
-	return_op_fd(path, 0, fsetxattr(fd, name, value, size, flags)); }
-static int acfs_removexattr(const char *path, const char *name) {
-	return_op_fd(path, 0, fremovexattr(fd, name)); }
-
-static int acfs_flock(const char *path, struct fuse_file_info *fi, int op) { return_op(flock(fi->fh, op)); }
 
 static ssize_t acfs_copy_file_range( const char *path_in,
 		struct fuse_file_info *fi_in, off_t off_in, const char *path_out,
@@ -327,9 +306,24 @@ static ssize_t acfs_copy_file_range( const char *path_in,
 	return res;
 }
 
+static off_t acfs_lseek(const char *path, off_t off, int whence, struct fuse_file_info *fi) {
+	return_op(lseek(fi->fh, off, whence)); }
+
+
+static void *acfs_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {
+	cfg->use_ino = 1;
+	cfg->nullpath_ok = 1;
+	cfg->parallel_direct_writes = 1;
+	// Same rationale as in libfuse/example/passthrough_fh.c, except
+	//  caches here are even more desynced due to cleanup in acfs_release.
+	cfg->entry_timeout = 0;
+	cfg->attr_timeout = 0;
+	cfg->negative_timeout = 0;
+	return NULL;
+}
 
 // Same order as https://libfuse.github.io/doxygen/structfuse__operations.html
-static struct fuse_operations acfs_ops = {
+static const struct fuse_operations acfs_ops = {
 	.getattr = acfs_getattr,
 	.readlink = acfs_readlink,
 	.mknod = acfs_mknod,
@@ -371,7 +365,8 @@ static struct fuse_operations acfs_ops = {
 	.flock = acfs_flock,
 	.fallocate = acfs_fallocate,
 	.copy_file_range = acfs_copy_file_range,
-	// .lseek
+	.lseek = acfs_lseek,
+	// .statx - not in fuse releases yet as of 2025-10-31
 };
 
 

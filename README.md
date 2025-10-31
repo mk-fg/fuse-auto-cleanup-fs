@@ -56,6 +56,11 @@ systemd should auto-order that mount after `/mnt/storage`,
 but when using same mountpoint on multiple fstab lines, adding `x-systemd.after=`
 and similar explicit ordering options might be useful (from [man systemd.mount]).
 
+[man systemd.mount]: https://man.archlinux.org/man/systemd.mount.5
+
+
+# Implementation quirks
+
 All file operations on acfs pass through to underlying directory, but when
 closing open files, it always checks used space there against `usage-limit`,
 and if it's over specified percentage, finds oldest file in `cleanup-dir`
@@ -74,11 +79,11 @@ cleanup routine, even if amount of files rsync'ed there in one go exceeds fs siz
 This is not intended to be a general-purpose filesystem to use for e.g. rootfs,
 and can potentially have issues with whatever odd concurrent operation semantics,
 where proxying syscalls in a direct way isn't sufficient for correctness.
+Layering this over multi-user network fs might have issues with remote posix locks,
+if used, as those are kernel-local in this implementation.
 
 Implementation of path traversals on mounted dir is definitely insecure,
 so do not use this overlay unless that directory is only accessible to trusted
 users/processes, only run it with dedicated least-privileged uid/gid,
 maybe in an LSM profile (to easily limit access to paths), and ideally with
 symlinks/submounts/special-nodes/etc blocked on underlying filesystem entirely.
-
-[man systemd.mount]: https://man.archlinux.org/man/systemd.mount.5
