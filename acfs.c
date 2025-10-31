@@ -26,6 +26,8 @@
 #include <stddef.h>
 #include <ftw.h>
 #include <err.h>
+#include <pthread.h>
+#include <libgen.h>
 
 
 struct acfs_dirp {
@@ -40,6 +42,7 @@ static struct acfs_mp {
 	char *path;
 	char *cleanup_path;
 	int cleanup_fd;
+	pthread_mutex_t cleanup_mutex;
 } acfs_mp;
 
 static struct acfs_options {
@@ -62,34 +65,44 @@ int acfs_opts_def_usage_limit = 90;
 /* return (int) syscall(SYS_openat2, acfs_mp.fd, path, how, sizeof(struct open_how)); */
 
 
+int acfs_cleanup_prefixlen = 0;
 char acfs_cleanup_oldest[PATH_MAX+1] = {0};
 time_t acfs_cleanup_mtime = 0;
+
 int acfs_cleanup_cb(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf) {
-	if (typeflag != FTW_F || (acfs_cleanup_mtime && acfs_cleanup_mtime < sb->st_mtime)) return 0;
+	if (typeflag != FTW_F || (acfs_cleanup_mtime && acfs_cleanup_mtime <= sb->st_mtime)) return 0;
 	acfs_cleanup_mtime = sb->st_mtime;
-	strncpy(acfs_cleanup_oldest, fpath + ftwbuf->base, PATH_MAX);
+	strncpy(acfs_cleanup_oldest, fpath + acfs_cleanup_prefixlen, PATH_MAX);
 	return 0;
 }
 
-static int acfs_release(const char *path, struct fuse_file_info *fi) {
-	// XXX: add locking around this for threads
-	int res = 0;
-	if (close(fi->fh) == -1) res = -errno;
-	struct statvfs st;
+static int acfs_cleanup() {
+	int res = 0; struct statvfs st;
 	if (fstatvfs(acfs_mp.fd, &st)) return -errno;
 	while (100 - (st.f_bavail * 100 / st.f_blocks) > acfs_options.usage_limit) {
-		nftw(acfs_mp.cleanup_path, acfs_cleanup_cb, 500, FTW_MOUNT);
+		if (pthread_mutex_lock(&acfs_mp.cleanup_mutex)) return -errno;
+		acfs_cleanup_prefixlen = strlen(acfs_mp.cleanup_path) + 1;
+		// FTW_PHYS is fine here because nftw uses path and this overlay anyway
+		nftw(acfs_mp.cleanup_path, acfs_cleanup_cb, 500, FTW_MOUNT | FTW_PHYS);
+		if (acfs_cleanup_oldest[0]) {
+			char *dir = "";
+			if (unlinkat(acfs_mp.cleanup_fd, acfs_cleanup_oldest, 0)) res = -errno;
+			else dir = dirname(acfs_cleanup_oldest);
+			// Try to remove empty parent dirs up to cleanup_fd or symlinks in path
+			while (dir[0] && dir[0] != '.' && dir[0] != '/') {
+				if (unlinkat(acfs_mp.cleanup_fd, dir, AT_REMOVEDIR)) {
+					if (errno != ENOTEMPTY) res = -errno;
+					break; }
+				dir = dirname(dir); } }
+		acfs_cleanup_oldest[0] = acfs_cleanup_mtime = 0;
+		if (pthread_mutex_unlock(&acfs_mp.cleanup_mutex)) return -errno;
 		if (!acfs_cleanup_oldest[0]) break; // nothing left to cleanup
-		// XXX: try removing parent dir after unlink, if empty
-		if ( unlinkat(acfs_mp.cleanup_fd, acfs_cleanup_oldest, 0) ||
-			fstatvfs(acfs_mp.fd, &st) ) return -errno;
-		acfs_cleanup_oldest[0] = '\0'; acfs_cleanup_mtime = 0; }
+		if (fstatvfs(acfs_mp.fd, &st)) return -errno; }
 	return res;
 }
 
 
-// Except for init and acfs_release, which does extra cleanup work,
-//  all other calls below are defined in fuse_operations/acfs_ops order.
+// Except for init, all other calls below are defined in fuse_operations/acfs_ops order.
 // Implementation is heavily derived from libfuse/example/passthrough_fh.c
 
 static int acfs_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi) {
@@ -170,7 +183,13 @@ static int acfs_write(const char *path, const char *buf, size_t size, off_t offs
 
 static int acfs_statfs(const char *path, struct statvfs *stbuf) { return_op(fstatvfs(acfs_mp.fd, stbuf)); }
 static int acfs_flush(const char *path, struct fuse_file_info *fi) { return_op(close(dup(fi->fh))); }
-// acfs_release - special definition with oldest-file-cleanup at the top
+
+static int acfs_release(const char *path, struct fuse_file_info *fi) {
+	int res = 0;
+	if (close(fi->fh) == -1) res = -errno;
+	if (!res) res = acfs_cleanup();
+	return res;
+}
 
 static int acfs_fsync(const char *path, int isdatasync, struct fuse_file_info *fi) {
 	if (isdatasync) return_op(fdatasync(fi->fh));
@@ -501,6 +520,7 @@ int main(int argc, char *argv[]) {
 		if (acfs_mp.cleanup_fd < 0)
 			err(1, "ERROR: cleanup-dir open [ %s ]", acfs_mp.cleanup_path);
 		free(cwd); }
+	pthread_mutex_init(&acfs_mp.cleanup_mutex, NULL);
 
 	struct statvfs st;
 	if (fstatvfs(acfs_mp.cleanup_fd, &st) || !st.f_blocks)
