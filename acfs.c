@@ -52,6 +52,8 @@ static struct acfs_options {
 int acfs_opts_def_usage_limit = 90;
 
 
+#define acfs_log(fmt, arg...) // fuse_log_debug seem to spam stderr without -d, not sure why
+// #define acfs_log(fmt, arg...) fuse_log(FUSE_LOG_DEBUG, "acfs :: " fmt "\n", ##arg);
 #define path_rel(p, rp) char rp[strlen(p)+2]; rp[0] = '.'; strcpy(rp+1, p);
 #define return_op(op) return op == -1 ? -errno : 0;
 #define return_op_fd(path, flags, op) \
@@ -70,9 +72,12 @@ char acfs_cleanup_oldest[PATH_MAX+1] = {0};
 time_t acfs_cleanup_mtime = 0;
 
 int acfs_cleanup_cb(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf) {
+	// Sanity-checks that returned path is absolute one starting with cleanup_path,
+	//  but assumes there won't be a double-slash or /../ returned by nftw() after that.
 	if (typeflag != FTW_F || (acfs_cleanup_mtime && acfs_cleanup_mtime <= sb->st_mtime)) return 0;
+	if (strncmp(fpath, acfs_mp.cleanup_path, acfs_cleanup_prefixlen)) return 0;
 	acfs_cleanup_mtime = sb->st_mtime;
-	strncpy(acfs_cleanup_oldest, fpath + acfs_cleanup_prefixlen, PATH_MAX);
+	strncpy(acfs_cleanup_oldest, fpath + acfs_cleanup_prefixlen + 1, PATH_MAX);
 	return 0;
 }
 
@@ -81,22 +86,24 @@ static int acfs_cleanup() {
 	if (fstatvfs(acfs_mp.fd, &st)) return -errno;
 	while (100 - (st.f_bavail * 100 / st.f_blocks) > acfs_options.usage_limit) {
 		if (pthread_mutex_lock(&acfs_mp.cleanup_mutex)) return -errno;
-		acfs_cleanup_prefixlen = strlen(acfs_mp.cleanup_path) + 1;
+		acfs_cleanup_prefixlen = strlen(acfs_mp.cleanup_path);
 		// FTW_PHYS is fine here because nftw uses path and this overlay anyway
 		nftw(acfs_mp.cleanup_path, acfs_cleanup_cb, 500, FTW_MOUNT | FTW_PHYS);
 		if (acfs_cleanup_oldest[0]) {
 			char *dir = "";
+			acfs_log("cleanup: rm [ %s ]", acfs_cleanup_oldest);
 			if (unlinkat(acfs_mp.cleanup_fd, acfs_cleanup_oldest, 0)) res = -errno;
 			else dir = dirname(acfs_cleanup_oldest);
 			// Try to remove empty parent dirs up to cleanup_fd or symlinks in path
 			while (dir[0] && dir[0] != '.' && dir[0] != '/') {
+				acfs_log("cleanup: rmdir [ %s ]", dir);
 				if (unlinkat(acfs_mp.cleanup_fd, dir, AT_REMOVEDIR)) {
 					if (errno != ENOTEMPTY) res = -errno;
 					break; }
 				dir = dirname(dir); } }
 		acfs_cleanup_oldest[0] = acfs_cleanup_mtime = 0;
 		if (pthread_mutex_unlock(&acfs_mp.cleanup_mutex)) return -errno;
-		if (!acfs_cleanup_oldest[0]) break; // nothing left to cleanup
+		if (!acfs_cleanup_oldest[0]) { acfs_log("cleanup: no files found"); break; }
 		if (fstatvfs(acfs_mp.fd, &st)) return -errno; }
 	return res;
 }
