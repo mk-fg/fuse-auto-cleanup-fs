@@ -132,6 +132,10 @@ symlinks/submounts/special-nodes/etc blocked on underlying filesystem entirely.
 
 - [BleachBit], [czkawka], [FSlint] - GUI/desktop manual disk-cleanup tools.
 
+- Apparently Oracle has [Advanced Cluster File System] under "ACFS" acronym too.
+
+    Or is it "[Automatic Storage Management Cluster File System (Oracle ACFS)]"? idk.
+
 [rotatefs]: https://github.com/frt/rotatefs
 [example/passthrough_fh.c from libfuse]:
   https://github.com/libfuse/libfuse/blob/master/example/passthrough_fh.c
@@ -146,3 +150,7 @@ symlinks/submounts/special-nodes/etc blocked on underlying filesystem entirely.
 [BleachBit]: https://www.bleachbit.org/
 [czkawka]: https://github.com/qarmin/czkawka
 [FSlint]: https://www.pixelbeat.org/fslint/
+[Advanced Cluster File System]:
+  https://www.oracle.com/database/technologies/rac/acfs.html
+[Automatic Storage Management Cluster File System (Oracle ACFS)]:
+  https://docs.oracle.com/en/database/oracle/oracle-database/19/ostmg/overview-acfs-advm.html
