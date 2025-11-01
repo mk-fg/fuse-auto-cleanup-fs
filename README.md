@@ -68,6 +68,7 @@ closing open files, it always checks used space there against `usage-limit`,
 and if it's over specified percentage, finds oldest-mtime files in `cleanup-dir`
 (same mounted dir by default) and removes those one-by-one in order,
 until free space goes under `usage-lwm` ("low-water mark" threshold).
+Removes empty parent dirs up to `cleanup-dir` after files in them.
 
 Since used-space checks happen between e.g. sequential file-copy ops,
 make sure that cleanup margin is larger than a single stored file should be,
@@ -92,6 +93,12 @@ so do not use this overlay unless that directory is only accessible to trusted
 users/processes, only run it with dedicated least-privileged uid/gid,
 maybe in an LSM profile (to easily restrict access to one path), and ideally with
 symlinks/submounts/special-nodes/etc blocked on underlying filesystem entirely.
+
+> Specific use-case I have for this is an opportunistic "grab as many new files
+> from here as possible" rsync-backup script for unimportant media files,
+> without having to worry about space available for important things next to them,
+> or whether those extra files all fit there in any way, but also without leaving
+> wasted free space around at the same time.
 
 
 # Links

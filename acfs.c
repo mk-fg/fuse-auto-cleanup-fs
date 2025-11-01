@@ -24,7 +24,7 @@
 #include <errno.h>
 #include <sys/time.h>
 #include <sys/xattr.h>
-#include <sys/file.h> /* flock(2) */
+#include <sys/file.h>
 #include <stddef.h>
 #include <ftw.h>
 #include <err.h>
