@@ -66,18 +66,6 @@ int acfs_opts_def_cbuff_sz = 50;
 
 #define acfs_log(fmt, arg...) // fuse_log_debug seem to spam stderr without -d, not sure why
 // #define acfs_log(fmt, arg...) fuse_log(FUSE_LOG_DEBUG, "acfs :: " fmt "\n", ##arg);
-#define path_rel(p, rp) char rp[strlen(p)+2]; rp[0] = '.'; strcpy(rp+1, p);
-#define return_op(op) return op == -1 ? -errno : 0;
-#define return_op_fd(path, flags, op) \
-	path_rel(path, rp); int fd = openat(acfs_mp.fd, rp, O_RDONLY); if (fd < 0) return -errno; \
-	int res = (int) op == -1 ? -errno : 0; close(fd); return res;
-
-// openat2 always seem to return "bad address" errno, maybe doesn't work on underlay-fs?
-/* struct open_how how = { // XXX: optional RESOLVE_NO_XDEV */
-/* 	.flags = flags | O_CLOEXEC, */
-/* 	.resolve = RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS }; */
-/* return (int) syscall(SYS_openat2, acfs_mp.fd, path, how, sizeof(struct open_how)); */
-
 
 static int acfs_cleanup_cmp(const void *p1, const void *p2) {
 	const struct acfs_rmfile *f1 = p1, *f2 = p2;
@@ -85,7 +73,8 @@ static int acfs_cleanup_cmp(const void *p1, const void *p2) {
 	if (f1->fn && !f2->fn) return -1;
 	return f1->ts == f2->ts ? 0 : (f1->ts < f2->ts ? -1 : 1); }
 
-static int acfs_cleanup_cb(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf) {
+static int acfs_cleanup_cb( const char *fpath,
+		const struct stat *sb, int typeflag, struct FTW *ftwbuf ) {
 	if (typeflag != FTW_F) goto end;
 	// Keeps 1*sz in buff qsort'ed, and up to .5*sz tail for entries with ts < buff[sz].ts
 	// Sorts when buffer fills-up, discarding tail entries after buff[sz] (with newest ts)
@@ -173,14 +162,17 @@ static int acfs_cleanup() {
 // Except for init, all other calls below are defined in fuse_operations/acfs_ops order.
 // Implementation is heavily derived from libfuse/example/passthrough_fh.c
 
+#define acfs_path_rel(p, rp) char rp[strlen(p)+2]; rp[0] = '.'; strcpy(rp+1, p);
+#define acfs_return_op(op) return op == -1 ? -errno : 0;
+
 static int acfs_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi) {
-	if (fi) return_op(fstat(fi->fh, stbuf));
-	path_rel(path, rp);
-	return_op(fstatat(acfs_mp.fd, rp, stbuf, AT_SYMLINK_NOFOLLOW));
+	if (fi) acfs_return_op(fstat(fi->fh, stbuf));
+	acfs_path_rel(path, rp);
+	acfs_return_op(fstatat(acfs_mp.fd, rp, stbuf, AT_SYMLINK_NOFOLLOW));
 }
 
 static int acfs_readlink(const char *path, char *buf, size_t size) {
-	path_rel(path, rp);
+	acfs_path_rel(path, rp);
 	int res = readlinkat(acfs_mp.fd, rp, buf, size - 1);
 	if (res == -1) return -errno;
 	buf[res] = '\0';
@@ -188,52 +180,52 @@ static int acfs_readlink(const char *path, char *buf, size_t size) {
 }
 
 static int acfs_mknod(const char *path, mode_t mode, dev_t rdev) {
-	if (S_ISFIFO(mode)) return_op(mkfifo(path, mode));
-	return_op(mknod(path, mode, rdev)); }
+	if (S_ISFIFO(mode)) acfs_return_op(mkfifo(path, mode));
+	acfs_return_op(mknod(path, mode, rdev)); }
 
 static int acfs_mkdir(const char *path, mode_t mode) {
-	path_rel(path, rp);
-	return_op(mkdirat(acfs_mp.fd, rp, mode)); }
+	acfs_path_rel(path, rp);
+	acfs_return_op(mkdirat(acfs_mp.fd, rp, mode)); }
 
 static int acfs_unlink(const char *path) {
-	path_rel(path, rp);
-	return_op(unlinkat(acfs_mp.fd, rp, 0)); }
+	acfs_path_rel(path, rp);
+	acfs_return_op(unlinkat(acfs_mp.fd, rp, 0)); }
 
 static int acfs_rmdir(const char *path) {
-	path_rel(path, rp);
-	return_op(unlinkat(acfs_mp.fd, rp, AT_REMOVEDIR)); }
+	acfs_path_rel(path, rp);
+	acfs_return_op(unlinkat(acfs_mp.fd, rp, AT_REMOVEDIR)); }
 
 static int acfs_symlink(const char *from, const char *to) {
-	path_rel(to, rp);
-	return_op(symlinkat(from, acfs_mp.fd, rp)); }
+	acfs_path_rel(to, rp);
+	acfs_return_op(symlinkat(from, acfs_mp.fd, rp)); }
 
 static int acfs_rename(const char *from, const char *to, unsigned int flags) {
-	path_rel(from, rp_from); path_rel(to, rp_to);
-	return_op(renameat2(acfs_mp.fd, rp_from, acfs_mp.fd, rp_to, flags)); }
+	acfs_path_rel(from, rp_from); acfs_path_rel(to, rp_to);
+	acfs_return_op(renameat2(acfs_mp.fd, rp_from, acfs_mp.fd, rp_to, flags)); }
 
 static int acfs_link(const char *from, const char *to) {
-	path_rel(from, rp_from); path_rel(to, rp_to);
-	return_op(linkat(acfs_mp.fd, rp_from, acfs_mp.fd, rp_to, AT_SYMLINK_FOLLOW)); }
+	acfs_path_rel(from, rp_from); acfs_path_rel(to, rp_to);
+	acfs_return_op(linkat(acfs_mp.fd, rp_from, acfs_mp.fd, rp_to, AT_SYMLINK_FOLLOW)); }
 
 static int acfs_chmod(const char *path, mode_t mode, struct fuse_file_info *fi) {
-	if (fi) return_op(fchmod(fi->fh, mode));
-	path_rel(path, rp);
-	return_op(fchmodat(acfs_mp.fd, rp, mode, 0)); }
+	if (fi) acfs_return_op(fchmod(fi->fh, mode));
+	acfs_path_rel(path, rp);
+	acfs_return_op(fchmodat(acfs_mp.fd, rp, mode, 0)); }
 
 static int acfs_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi) {
-	if (fi) return_op(fchown(fi->fh, uid, gid));
-	path_rel(path, rp);
-	return_op(fchownat(acfs_mp.fd, rp, uid, gid, AT_SYMLINK_NOFOLLOW)); }
+	if (fi) acfs_return_op(fchown(fi->fh, uid, gid));
+	acfs_path_rel(path, rp);
+	acfs_return_op(fchownat(acfs_mp.fd, rp, uid, gid, AT_SYMLINK_NOFOLLOW)); }
 
 static int acfs_truncate(const char *path, off_t size, struct fuse_file_info *fi) {
-	if (fi) return_op(ftruncate(fi->fh, size));
-	path_rel(path, rp);
+	if (fi) acfs_return_op(ftruncate(fi->fh, size));
+	acfs_path_rel(path, rp);
 	int fd = openat(acfs_mp.fd, rp, O_WRONLY); if (fd < 0) return -errno;
 	int res = ftruncate(fd, size); close(fd); return res;
 }
 
 static int acfs_open(const char *path, struct fuse_file_info *fi) {
-	path_rel(path, rp);
+	acfs_path_rel(path, rp);
 	int fd = openat(acfs_mp.fd, rp, fi->flags);
 	if (fd == -1) return -errno;
 	if (fi->flags & O_DIRECT) {
@@ -243,14 +235,18 @@ static int acfs_open(const char *path, struct fuse_file_info *fi) {
 	return 0;
 }
 
-static int acfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
-	return_op(pread(fi->fh, buf, size, offset)); }
+static int acfs_read( const char *path, char *buf,
+		size_t size, off_t offset, struct fuse_file_info *fi ) {
+	acfs_return_op(pread(fi->fh, buf, size, offset)); }
 
-static int acfs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
-	return_op(pwrite(fi->fh, buf, size, offset)); }
+static int acfs_write( const char *path, const char *buf,
+		size_t size, off_t offset, struct fuse_file_info *fi ) {
+	acfs_return_op(pwrite(fi->fh, buf, size, offset)); }
 
-static int acfs_statfs(const char *path, struct statvfs *stbuf) { return_op(fstatvfs(acfs_mp.fd, stbuf)); }
-static int acfs_flush(const char *path, struct fuse_file_info *fi) { return_op(close(dup(fi->fh))); }
+static int acfs_statfs(const char *path,
+	struct statvfs *stbuf) { acfs_return_op(fstatvfs(acfs_mp.fd, stbuf)); }
+static int acfs_flush(const char *path,
+	struct fuse_file_info *fi) { acfs_return_op(close(dup(fi->fh))); }
 
 static int acfs_release(const char *path, struct fuse_file_info *fi) {
 	int res = 0;
@@ -260,10 +256,14 @@ static int acfs_release(const char *path, struct fuse_file_info *fi) {
 }
 
 static int acfs_fsync(const char *path, int isdatasync, struct fuse_file_info *fi) {
-	if (isdatasync) return_op(fdatasync(fi->fh));
-	return_op(fsync(fi->fh)); }
+	if (isdatasync) acfs_return_op(fdatasync(fi->fh));
+	acfs_return_op(fsync(fi->fh)); }
 
-static int acfs_setxattr(const char *path, const char *name, const char *value, size_t size, int flags) {
+#define return_op_fd(path, flags, op) \
+	acfs_path_rel(path, rp); int fd = openat(acfs_mp.fd, rp, O_RDONLY); if (fd < 0) return -errno; \
+	int res = (int) op == -1 ? -errno : 0; close(fd); return res;
+static int acfs_setxattr(const char *path,
+		const char *name, const char *value, size_t size, int flags) {
 	return_op_fd(path, 0, fsetxattr(fd, name, value, size, flags)); }
 static int acfs_getxattr(const char *path, const char *name, char *value, size_t size) {
 	return_op_fd(path, 0, fgetxattr(fd, name, value, size)); }
@@ -280,7 +280,7 @@ static int acfs_opendir(const char *path, struct fuse_file_info *fi) {
 		return 0; }
 	struct acfs_dirp *d = malloc(sizeof(struct acfs_dirp));
 	if (d == NULL) return -ENOMEM;
-	path_rel(path, rp);
+	acfs_path_rel(path, rp);
 	int fd = openat( acfs_mp.fd, rp,
 		O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOCTTY | O_NONBLOCK );
 	if (fd < 0) { res = -errno; free(d); return res; }
@@ -291,8 +291,8 @@ static int acfs_opendir(const char *path, struct fuse_file_info *fi) {
 	return 0;
 }
 
-static int acfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
-		off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags) {
+static int acfs_readdir( const char *path, void *buf, fuse_fill_dir_t filler,
+		off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags ) {
 	struct acfs_dirp *d = (struct acfs_dirp *) (uintptr_t) fi->fh;
 	if (offset != d->offset) {
 		seekdir(d->dp, offset);
@@ -329,11 +329,11 @@ static int acfs_releasedir(const char *path, struct fuse_file_info *fi) {
 }
 
 static int acfs_access(const char *path, int mask) {
-	path_rel(path, rp);
-	return_op(faccessat(acfs_mp.fd, rp, mask, AT_EACCESS)); }
+	acfs_path_rel(path, rp);
+	acfs_return_op(faccessat(acfs_mp.fd, rp, mask, AT_EACCESS)); }
 
 static int acfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
-	path_rel(path, rp);
+	acfs_path_rel(path, rp);
 	int fd = openat(acfs_mp.fd, rp, fi->flags, mode);
 	if (fd == -1) return -errno;
 	fi->fh = fd;
@@ -341,12 +341,13 @@ static int acfs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 }
 
 static int acfs_utimens(const char *path, const struct timespec ts[2], struct fuse_file_info *fi) {
-	if (fi) return_op(futimens(fi->fh, ts));
-	path_rel(path, rp);
-	return_op(utimensat(acfs_mp.fd, rp, ts, AT_SYMLINK_NOFOLLOW));
+	if (fi) acfs_return_op(futimens(fi->fh, ts));
+	acfs_path_rel(path, rp);
+	acfs_return_op(utimensat(acfs_mp.fd, rp, ts, AT_SYMLINK_NOFOLLOW));
 }
 
-static int acfs_write_buf(const char *path, struct fuse_bufvec *buf, off_t offset, struct fuse_file_info *fi) {
+static int acfs_write_buf( const char *path,
+		struct fuse_bufvec *buf, off_t offset, struct fuse_file_info *fi ) {
 	struct fuse_bufvec dst = FUSE_BUFVEC_INIT(fuse_buf_size(buf));
 	dst.buf[0].flags = FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK;
 	dst.buf[0].fd = fi->fh;
@@ -354,7 +355,8 @@ static int acfs_write_buf(const char *path, struct fuse_bufvec *buf, off_t offse
 	return fuse_buf_copy(&dst, buf, FUSE_BUF_SPLICE_NONBLOCK);
 }
 
-static int acfs_read_buf(const char *path, struct fuse_bufvec **bufp, size_t size, off_t offset, struct fuse_file_info *fi) {
+static int acfs_read_buf( const char *path,
+		struct fuse_bufvec **bufp, size_t size, off_t offset, struct fuse_file_info *fi ) {
 	struct fuse_bufvec *src;
 	src = malloc(sizeof(struct fuse_bufvec));
 	if (src == NULL) return -ENOMEM;
@@ -366,12 +368,14 @@ static int acfs_read_buf(const char *path, struct fuse_bufvec **bufp, size_t siz
 	return 0;
 }
 
-static int acfs_flock(const char *path, struct fuse_file_info *fi, int op) { return_op(flock(fi->fh, op)); }
+static int acfs_flock( const char *path,
+	struct fuse_file_info *fi, int op ) { acfs_return_op(flock(fi->fh, op)); }
 
-static int acfs_fallocate(const char *path, int mode, off_t offset, off_t length, struct fuse_file_info *fi) {
+static int acfs_fallocate( const char *path,
+		int mode, off_t offset, off_t length, struct fuse_file_info *fi ) {
 	if (mode) return -EOPNOTSUPP;
 	if (fi) return -posix_fallocate(fi->fh, offset, length);
-	path_rel(path, rp);
+	acfs_path_rel(path, rp);
 	int fd = openat(acfs_mp.fd, rp, O_WRONLY); if (fd < 0) return -errno;
 	int res = -posix_fallocate(fd, offset, length); close(fd); return res;
 }
@@ -381,10 +385,10 @@ static ssize_t acfs_copy_file_range( const char *path_in,
 		struct fuse_file_info *fi_out, off_t off_out, size_t len, int flags ) {
 	int fd_in, fd_out;
 	if (fi_in) fd_in = fi_in->fh;
-	else { path_rel(path_in, rp_in);
+	else { acfs_path_rel(path_in, rp_in);
 		fd_in = openat(acfs_mp.fd, rp_in, O_RDONLY); if (fd_in < 0) return -errno; }
 	if (fi_out) fd_out = fi_out->fh;
-	else { path_rel(path_out, rp_out);
+	else { acfs_path_rel(path_out, rp_out);
 		fd_out = openat(acfs_mp.fd, rp_out, O_WRONLY); if (fd_out < 0) return -errno; }
 	int res = copy_file_range(fd_in, &off_in, fd_out, &off_out, len, flags);
 	if (res == -1) res = -errno;
@@ -393,8 +397,8 @@ static ssize_t acfs_copy_file_range( const char *path_in,
 	return res;
 }
 
-static off_t acfs_lseek(const char *path, off_t off, int whence, struct fuse_file_info *fi) {
-	return_op(lseek(fi->fh, off, whence)); }
+static off_t acfs_lseek( const char *path, off_t off, int whence,
+	struct fuse_file_info *fi ) { acfs_return_op(lseek(fi->fh, off, whence)); }
 
 
 static void *acfs_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {
@@ -550,20 +554,20 @@ static int acfs_opt_proc(void *data, const char *arg, int key, struct fuse_args 
 			fuse_opt_add_arg(args, "-h");
 			fuse_main(args->argc, args->argv, &acfs_ops, NULL);
 			printf(
-				"\nACFS filesystem-specific options (usable as `-o <opt>=<value>` in mount/fstab):\n"
-				"    -u <percentage>   --usage-limit=<percentage>\n"
-				"       Used space percentage threshold to cleanup mounted directory. Default: %d%%\n"
-				"    -U <percentage>   --usage-lwm=<percentage>\n"
-				"       Used-space%% to cleanup down to after it reaches usage-limit.\n"
-				"       Default: %d%% under usage-limit, unless specified with this option.\n"
-				"    --cleanup-dir=<path>\n"
-				"       Directory to lookup for files to remove. Default is to use mounted dir.\n"
-				"       Path can either be absolute or relative to the mounted dir, must be on same fs.\n"
-				"       Symlinks in this dir are also only navigated within filesystem.\n"
-				"    --cleanup-buff-sz=<n>\n"
-				"       How many oldest-mtime cleanup-candidate files to find in one cleanup-dir scan.\n"
-				"       Should be set above typical number of files to remove to get disk usage from\n"
-				"        usage-limit%% down to usage-lwm%%, depending on average file sizes. Default: %d\n\n",
+"\nACFS filesystem-specific options (usable as `-o <opt>=<value>` in mount/fstab):\n"
+"    -u <percentage>   --usage-limit=<percentage>\n"
+"       Used space percentage threshold to cleanup mounted directory. Default: %d%%\n"
+"    -U <percentage>   --usage-lwm=<percentage>\n"
+"       Used-space%% to cleanup down to after it reaches usage-limit.\n"
+"       Default: %d%% under usage-limit, unless specified with this option.\n"
+"    --cleanup-dir=<path>\n"
+"       Directory to lookup for files to remove. Default is to use mounted dir.\n"
+"       Path can either be absolute or relative to the mounted dir, must be on same fs.\n"
+"       Symlinks in this dir are also only navigated within filesystem.\n"
+"    --cleanup-buff-sz=<n>\n"
+"       How many oldest-mtime cleanup-candidate files to find in one cleanup-dir scan.\n"
+"       Should be set above typical number of files to remove to get disk usage from\n"
+"        usage-limit%% down to usage-lwm%%, depending on average file sizes. Default: %d\n\n",
 				acfs_opts_def_usage_hwm, acfs_opts_def_usage_lwm_diff, acfs_opts_def_cbuff_sz );
 			exit(1);
 		case ACFS_KEY_VERSION:
