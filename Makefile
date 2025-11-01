@@ -1,4 +1,5 @@
 CC := gcc
+STRIP := strip
 CFLAGS := -I/usr/include/fuse3 -Wall -O2 $(EXTRA_CFLAGS)
 LDLIBS := -lfuse3 $(EXTRA_LDLIBS)
 
@@ -8,4 +9,5 @@ clean:
 	rm -f acfs
 
 acfs: acfs.c
-	$(CC) -std=c99 $(CFLAGS) $(LDLIBS) -o $@ $<
+	$(CC) $(CFLAGS) $(LDLIBS) -o $@ $<
+	$(STRIP) acfs
