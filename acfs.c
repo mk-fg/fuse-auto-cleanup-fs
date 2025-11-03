@@ -4,7 +4,7 @@
 // Copyright (C) 2025 Mike Kazantsev
 // This program can be distributed under the terms of the GNU GPL. See COPYING file.
 //
-// Build: gcc -I/usr/include/fuse3 -lfuse3 -Wall -O2 -o acfs acfs.c
+// Build: gcc -I/usr/include/fuse3 -lfuse3 -Wall -O2 -o acfs acfs.c && strip acfs
 // Usage info: ./acfs -h
 
 #define ACFS_VERSION "1.0"
@@ -119,12 +119,13 @@ static int acfs_cleanup() {
 
 	while (du > acfs_opts.usage_lwm) {
 		if (pthread_mutex_lock(&acfs_clean.mutex)) return -errno;
+		int n = 0;
 		acfs_clean.prefixlen = strlen(acfs_clean.path);
-		int n = 0; struct acfs_rmfile *rmf;
+		acfs_clean.buff_n = 0; acfs_clean.buff_sorted = false;
 
 		// FTW_PHYS is fine here because nftw uses path and this overlay anyway
-		if (nftw( acfs_clean.path, acfs_cleanup_cb,
-				500, FTW_MOUNT | FTW_PHYS | FTW_ACTIONRETVAL ) == FTW_STOP) {
+		if (nftw( acfs_clean.path, acfs_cleanup_cb, 500,
+				FTW_MOUNT | FTW_PHYS | FTW_ACTIONRETVAL ) == FTW_STOP) {
 			res = -ENOMEM; goto buff_cleanup; }
 		if (!acfs_clean.buff_n) goto skip;
 
@@ -132,7 +133,7 @@ static int acfs_cleanup() {
 			sizeof(struct acfs_rmfile), acfs_cleanup_cmp );
 		for (; n < acfs_clean.buff_n; n++) {
 			char *dir = "";
-			rmf = acfs_clean.buff + n;
+			struct acfs_rmfile *rmf = acfs_clean.buff + n;
 			acfs_log("cleanup: rm [ %s ]", rmf->fn);
 			if (unlinkat(acfs_clean.fd, rmf->fn, 0)) res = -errno;
 			else dir = dirname(rmf->fn);
@@ -148,12 +149,10 @@ static int acfs_cleanup() {
 
 		buff_cleanup:
 		for (; n < acfs_clean.buff_n; n++) free(acfs_clean.buff[n].fn);
-		acfs_clean.buff_sorted = false;
 
 		skip:
 		if (pthread_mutex_unlock(&acfs_clean.mutex)) return -errno;
 		if (!acfs_clean.buff_n) { acfs_log("cleanup: no files found"); break; }
-		acfs_clean.buff_n = 0;
 		if ((res = res ? res : du < 0 ? du : res)) break; }
 	return res;
 }
