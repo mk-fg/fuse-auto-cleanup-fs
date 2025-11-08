@@ -38,8 +38,8 @@ Or without `make`: `gcc -I/usr/include/fuse3 -lfuse3 -Wall -O2 -o acfs acfs.c &&
 
 # Usage
 
-Something like: `./acfs /mnt/storage/temp`\
-Or when it's in PATH: `mount -t fuse.acfs acfs /mnt/storage/temp`\
+Basic usage example: `./acfs /mnt/storage/temp` \
+Or when `acfs` is in PATH: `mount -t fuse.acfs acfs /mnt/storage/temp` \
 Then unmount as usual: `umount /mnt/storage/temp`
 
 Always replaces directory with a new mountpoint,

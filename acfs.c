@@ -139,7 +139,7 @@ static int acfs_cleanup() {
 		acfs_clean.prefixlen = strlen(acfs_clean.path);
 		acfs_clean.buff_n = 0; acfs_clean.buff_sorted = false;
 
-		// FTW_PHYS is fine here because nftw uses path and this overlay anyway
+		// FTW_MOUNT is fine here because nftw uses path and this overlay anyway
 		if (nftw( acfs_clean.path, acfs_cleanup_cb, 500,
 				FTW_MOUNT | FTW_PHYS | FTW_ACTIONRETVAL ) == FTW_STOP) {
 			res = -ENOMEM; goto buff_cleanup; }
@@ -147,15 +147,15 @@ static int acfs_cleanup() {
 
 		qsort( acfs_clean.buff, acfs_clean.buff_n,
 			sizeof(struct acfs_rmfile), acfs_cleanup_cmp );
-		for (; n < acfs_clean.buff_n; n++) {
+		while (n < acfs_clean.buff_n) {
 			struct acfs_rmfile *rmf = acfs_clean.buff + n;
 			acfs_log("cleanup: rm [ %s ]", rmf->fn);
 			char rm[PATH_MAX+1]; int rm_pos = 0, rm_flags = 0;
 			strncpy(rm, rmf->fn, PATH_MAX);
 			int dir_fd = -1; char *fn = basename(rm), *dir = dirname(rmf->fn);
-			if (dir[0] == '/') res = -EINVAL;
+			if (dir[0] == '/') res = -EMEDIUMTYPE; // bug in acfs_cleanup_cb
 			else if ((dir_fd = acfs_open_dir(acfs_clean.fd, dir)) < 0) res = -errno;
-			while (dir_fd >= 0) {
+			while (dir_fd >= 0) { // remove file, then try to remove empty parent dirs
 				if (unlinkat(dir_fd, fn, rm_flags)) {
 					if (!rm_flags) res = -errno; // dir cleanup is entirely opportunistic
 					break; }
@@ -165,11 +165,11 @@ static int acfs_cleanup() {
 				if (!(fn = strrchr(dir, '/'))) fn = dir;
 				strcpy(rm + rm_pos, fn); fn = rm;
 				dir = dirname(dir); rm_flags = AT_REMOVEDIR; }
-			free(rmf->fn); if (dir_fd >= 0) close(dir_fd);
+			free(rmf->fn); n++; if (dir_fd >= 0) close(dir_fd);
 			if ((du = acfs_cleanup_du()) <= acfs_opts.usage_lwm) break; }
 
 		buff_cleanup:
-		for (; n < acfs_clean.buff_n; n++) free(acfs_clean.buff[n].fn);
+		while (n < acfs_clean.buff_n) free(acfs_clean.buff[n++].fn);
 
 		skip:
 		if (!acfs_clean.buff_n) { acfs_log("cleanup: no files found"); break; }
