@@ -19,6 +19,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <linux/openat2.h>
+#include <sys/syscall.h>
 #include <sys/stat.h>
 #include <dirent.h>
 #include <errno.h>
@@ -30,6 +32,21 @@
 #include <err.h>
 #include <pthread.h>
 #include <libgen.h>
+
+
+// Internal open() that blocks symlinks - libfuse should resolve those before acfs_ops
+#define acfs_open(dir_fd, path, f) acfs_openat2( dir_fd, path, \
+	(struct open_how){.flags=f, .resolve=RESOLVE_NO_SYMLINKS} )
+#define acfs_open_mode(dir_fd, path, f, m) acfs_openat2( dir_fd, path, \
+	(struct open_how){.flags=f, .mode=m & 07777, .resolve=RESOLVE_NO_SYMLINKS} )
+#define acfs_open_dir(dir_fd, path) acfs_openat2(dir_fd, path, (struct open_how){ \
+	.resolve=RESOLVE_NO_SYMLINKS, \
+	.flags=O_RDONLY | O_DIRECTORY | O_NOCTTY | O_CLOEXEC | O_NOFOLLOW })
+int acfs_openat2(int dir_fd, const char* path, struct open_how how) {
+	return syscall(SYS_openat2, dir_fd, path, &how, sizeof(struct open_how)); }
+
+#define acfs_path_rel(p, rp) char rp[strlen(p)+2]; rp[0] = '.'; strcpy(rp+1, p);
+#define acfs_return_op(op) return op == -1 ? -errno : 0;
 
 
 struct acfs_dirp { DIR *dp; struct dirent *entry; off_t offset; };
@@ -132,19 +149,24 @@ static int acfs_cleanup() {
 		qsort( acfs_clean.buff, acfs_clean.buff_n,
 			sizeof(struct acfs_rmfile), acfs_cleanup_cmp );
 		for (; n < acfs_clean.buff_n; n++) {
-			char *dir = "";
 			struct acfs_rmfile *rmf = acfs_clean.buff + n;
 			acfs_log("cleanup: rm [ %s ]", rmf->fn);
-			if (unlinkat(acfs_clean.fd, rmf->fn, 0)) res = -errno;
-			else dir = dirname(rmf->fn);
-			// Try to remove empty parent dirs up to cleanup_fd or symlinks in path
-			while (dir[0] && dir[0] != '.' && dir[0] != '/') {
-				acfs_log("cleanup: rmdir [ %s ]", dir);
-				if (unlinkat(acfs_clean.fd, dir, AT_REMOVEDIR)) {
-					if (errno != ENOTEMPTY) res = -errno;
+			char rm[PATH_MAX]; int rm_pos = 0, rm_flags = 0;
+			strncpy(rm, rmf->fn, PATH_MAX-1);
+			int dir_fd = -1; char *fn = basename(rm), *dir = dirname(rmf->fn);
+			if (dir[0] == '/') res = -EINVAL;
+			else if ((dir_fd = acfs_open_dir(acfs_clean.fd, dir)) < 0) res = -errno;
+			while (dir_fd >= 0) {
+				if (unlinkat(dir_fd, fn, rm_flags)) {
+					if (!rm_flags) res = -errno; // dir cleanup is entirely opportunistic
 					break; }
-				dir = dirname(dir); }
-			free(rmf->fn);
+				if (dir[0] == '.') break;
+				acfs_log("cleanup: rmdir [ %s ]", dir);
+				strcpy(rm + rm_pos, "../"); rm_pos += 3;
+				if (!(fn = strrchr(dir, '/'))) fn = dir;
+				strcpy(rm + rm_pos, fn); fn = rm;
+				dir = dirname(dir); rm_flags = AT_REMOVEDIR; }
+			free(rmf->fn); if (dir_fd >= 0) close(dir_fd);
 			if ((du = acfs_cleanup_du()) <= acfs_opts.usage_lwm) break; }
 
 		buff_cleanup:
@@ -160,9 +182,7 @@ static int acfs_cleanup() {
 
 // Except for init, all other calls below are defined in fuse_operations/acfs_ops order.
 // Implementation is heavily derived from libfuse/example/passthrough_fh.c
-
-#define acfs_path_rel(p, rp) char rp[strlen(p)+2]; rp[0] = '.'; strcpy(rp+1, p);
-#define acfs_return_op(op) return op == -1 ? -errno : 0;
+// XXX: all ...at(acfs_mp.fd, ...) calls below are non-dir-symlink-safe, should use openat2()
 
 static int acfs_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi) {
 	if (fi) acfs_return_op(fstat(fi->fh, stbuf));
@@ -179,8 +199,9 @@ static int acfs_readlink(const char *path, char *buf, size_t size) {
 }
 
 static int acfs_mknod(const char *path, mode_t mode, dev_t rdev) {
-	if (S_ISFIFO(mode)) acfs_return_op(mkfifo(path, mode));
-	acfs_return_op(mknod(path, mode, rdev)); }
+	acfs_path_rel(path, rp);
+	if (S_ISFIFO(mode)) acfs_return_op(mkfifoat(acfs_mp.fd, rp, mode));
+	acfs_return_op(mknodat(acfs_mp.fd, rp, mode, rdev)); }
 
 static int acfs_mkdir(const char *path, mode_t mode) {
 	acfs_path_rel(path, rp);
@@ -219,13 +240,14 @@ static int acfs_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_i
 static int acfs_truncate(const char *path, off_t size, struct fuse_file_info *fi) {
 	if (fi) acfs_return_op(ftruncate(fi->fh, size));
 	acfs_path_rel(path, rp);
-	int fd = openat(acfs_mp.fd, rp, O_WRONLY); if (fd < 0) return -errno;
+	int fd = acfs_open(acfs_mp.fd, rp, O_WRONLY);
+	if (fd < 0) return -errno;
 	int res = ftruncate(fd, size); close(fd); return res;
 }
 
-static int acfs_open(const char *path, struct fuse_file_info *fi) {
+static int acfs_open_op(const char *path, struct fuse_file_info *fi) {
 	acfs_path_rel(path, rp);
-	int fd = openat(acfs_mp.fd, rp, fi->flags);
+	int fd = acfs_open(acfs_mp.fd, rp, fi->flags);
 	if (fd == -1) return -errno;
 	if (fi->flags & O_DIRECT) {
 		fi->direct_io = 1;
@@ -259,7 +281,8 @@ static int acfs_fsync(const char *path, int isdatasync, struct fuse_file_info *f
 	acfs_return_op(fsync(fi->fh)); }
 
 #define return_op_fd(path, flags, op) \
-	acfs_path_rel(path, rp); int fd = openat(acfs_mp.fd, rp, O_RDONLY); if (fd < 0) return -errno; \
+	acfs_path_rel(path, rp); \
+	int fd = acfs_open(acfs_mp.fd, rp, O_RDONLY); if (fd < 0) return -errno; \
 	int res = (int) op == -1 ? -errno : 0; close(fd); return res;
 static int acfs_setxattr(const char *path,
 		const char *name, const char *value, size_t size, int flags) {
@@ -280,8 +303,7 @@ static int acfs_opendir(const char *path, struct fuse_file_info *fi) {
 	struct acfs_dirp *d = malloc(sizeof(struct acfs_dirp));
 	if (d == NULL) return -ENOMEM;
 	acfs_path_rel(path, rp);
-	int fd = openat( acfs_mp.fd, rp,
-		O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOCTTY | O_NONBLOCK );
+	int fd = acfs_open_dir(acfs_mp.fd, rp);
 	if (fd < 0) { res = -errno; free(d); return res; }
 	if (!(d->dp = fdopendir(fd))) { res = -errno; close(fd); free(d); return res; }
 	d->offset = 0;
@@ -333,7 +355,7 @@ static int acfs_access(const char *path, int mask) {
 
 static int acfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
 	acfs_path_rel(path, rp);
-	int fd = openat(acfs_mp.fd, rp, fi->flags, mode);
+	int fd = acfs_open_mode(acfs_mp.fd, rp, fi->flags, mode);
 	if (fd == -1) return -errno;
 	fi->fh = fd;
 	return 0;
@@ -356,8 +378,7 @@ static int acfs_write_buf( const char *path,
 
 static int acfs_read_buf( const char *path,
 		struct fuse_bufvec **bufp, size_t size, off_t offset, struct fuse_file_info *fi ) {
-	struct fuse_bufvec *src;
-	src = malloc(sizeof(struct fuse_bufvec));
+	struct fuse_bufvec *src = malloc(sizeof(struct fuse_bufvec));
 	if (src == NULL) return -ENOMEM;
 	*src = FUSE_BUFVEC_INIT(size);
 	src->buf[0].flags = FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK;
@@ -375,7 +396,8 @@ static int acfs_fallocate( const char *path,
 	if (mode) return -EOPNOTSUPP;
 	if (fi) return -posix_fallocate(fi->fh, offset, length);
 	acfs_path_rel(path, rp);
-	int fd = openat(acfs_mp.fd, rp, O_WRONLY); if (fd < 0) return -errno;
+	int fd = acfs_open(acfs_mp.fd, rp, O_WRONLY);
+	if (fd < 0) return -errno;
 	int res = -posix_fallocate(fd, offset, length); close(fd); return res;
 }
 
@@ -385,10 +407,10 @@ static ssize_t acfs_copy_file_range( const char *path_in,
 	int fd_in, fd_out;
 	if (fi_in) fd_in = fi_in->fh;
 	else { acfs_path_rel(path_in, rp_in);
-		fd_in = openat(acfs_mp.fd, rp_in, O_RDONLY); if (fd_in < 0) return -errno; }
+		fd_in = acfs_open(acfs_mp.fd, rp_in, O_RDONLY); if (fd_in < 0) return -errno; }
 	if (fi_out) fd_out = fi_out->fh;
 	else { acfs_path_rel(path_out, rp_out);
-		fd_out = openat(acfs_mp.fd, rp_out, O_WRONLY); if (fd_out < 0) return -errno; }
+		fd_out = acfs_open(acfs_mp.fd, rp_out, O_WRONLY); if (fd_out < 0) return -errno; }
 	int res = copy_file_range(fd_in, &off_in, fd_out, &off_out, len, flags);
 	if (res == -1) res = -errno;
 	if (!fi_in) close(fd_in);
@@ -426,7 +448,7 @@ static const struct fuse_operations acfs_ops = {
 	.chmod = acfs_chmod,
 	.chown = acfs_chown,
 	.truncate = acfs_truncate,
-	.open = acfs_open,
+	.open = acfs_open_op,
 	.read = acfs_read,
 	.write = acfs_write,
 	.statfs = acfs_statfs,
@@ -536,9 +558,11 @@ static const struct fuse_opt option_spec[] = {
 	ACFS_OPT("--usage-lwm=%d", usage_lwm),
 
 	ACFS_OPT("cleanup-dir=%s", cleanup_dir),
+	ACFS_OPT("--cleanup-dir %s", cleanup_dir),
 	ACFS_OPT("--cleanup-dir=%s", cleanup_dir),
 
 	ACFS_OPT("cleanup-buff-sz=%d", cleanup_buff_sz),
+	ACFS_OPT("--cleanup-buff-sz %d", cleanup_buff_sz),
 	ACFS_OPT("--cleanup-buff-sz=%d", cleanup_buff_sz),
 
 	FUSE_OPT_KEY("-V", ACFS_KEY_VERSION),
@@ -609,8 +633,7 @@ int main(int argc, char *argv[]) {
 		if ( chdir(acfs_mp.path) ||
 				!(acfs_clean.path = realpath(acfs_opts.cleanup_dir, NULL)) || chdir(cwd) )
 			err(1, "ERROR: cleanup-dir resolve [ %s ]", acfs_opts.cleanup_dir);
-		acfs_clean.fd = openat( acfs_mp.fd,
-			acfs_clean.path, O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOCTTY );
+		acfs_clean.fd = acfs_open_dir(acfs_mp.fd, acfs_clean.path);
 		if (acfs_clean.fd < 0)
 			err(1, "ERROR: cleanup-dir open [ %s ]", acfs_clean.path);
 		free(cwd); }
