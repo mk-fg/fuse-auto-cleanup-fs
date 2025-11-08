@@ -32,6 +32,7 @@
 #include <err.h>
 #include <pthread.h>
 #include <libgen.h>
+#include <sys/param.h>
 
 
 // Internal open() that blocks symlinks - libfuse should resolve those before acfs_ops
@@ -148,8 +149,8 @@ static int acfs_cleanup() {
 		for (; n < acfs_clean.buff_n; n++) {
 			struct acfs_rmfile *rmf = acfs_clean.buff + n;
 			acfs_log("cleanup: rm [ %s ]", rmf->fn);
-			char rm[PATH_MAX]; int rm_pos = 0, rm_flags = 0;
-			strncpy(rm, rmf->fn, PATH_MAX-1);
+			char rm[PATH_MAX+1]; int rm_pos = 0, rm_flags = 0;
+			strncpy(rm, rmf->fn, PATH_MAX);
 			int dir_fd = -1; char *fn = basename(rm), *dir = dirname(rmf->fn);
 			if (dir[0] == '/') res = -EINVAL;
 			else if ((dir_fd = acfs_open_dir(acfs_clean.fd, dir)) < 0) res = -errno;
@@ -179,63 +180,84 @@ static int acfs_cleanup() {
 
 // Except for init, all other calls below are defined in fuse_operations/acfs_ops order.
 // Implementation is heavily derived from libfuse/example/passthrough_fh.c
-// XXX: all ...at(acfs_mp.fd, ...) calls below are non-dir-symlink-safe, should use openat2()
 
 #define acfs_op_path_rel(p, rp) char rp[strlen(p)+2]; rp[0] = '.'; strcpy(rp+1, p);
 #define acfs_op_return(op) return op == -1 ? -errno : 0;
 
+// acfs_op_dirfd* are openat2() wrappers for symlink-safe path operations
+#define acfs_op_dirfd_nocheck(path, fn, dir_fd) \
+	char fn[NAME_MAX+1]; char p_##path[PATH_MAX+1]; \
+	acfs_op_path_rel(path, rp_##path); \
+	strcpy(p_##path, rp_##path); strncpy(fn, basename(p_##path), NAME_MAX); \
+	int dir_fd = acfs_open_dir(acfs_mp.fd, dirname(rp_##path)); \
+	if (dir_fd < 0) dir_fd = -errno;
+#define acfs_op_dirfd(path, fd, dir_fd) \
+	acfs_op_dirfd_nocheck(path, fd, dir_fd); if (dir_fd < 0) return dir_fd;
+#define acfs_op_return_dirfd(dir_fd, op) \
+	int res = op == -1 ? -errno : 0; close(dir_fd); return res;
+
 static int acfs_op_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi) {
 	if (fi) acfs_op_return(fstat(fi->fh, stbuf));
-	acfs_op_path_rel(path, rp);
-	acfs_op_return(fstatat(acfs_mp.fd, rp, stbuf, AT_SYMLINK_NOFOLLOW));
+	acfs_op_dirfd(path, fn, dir_fd);
+	acfs_op_return_dirfd(dir_fd, fstatat(dir_fd, fn, stbuf, AT_SYMLINK_NOFOLLOW));
 }
 
 static int acfs_op_readlink(const char *path, char *buf, size_t size) {
-	acfs_op_path_rel(path, rp);
-	int res = readlinkat(acfs_mp.fd, rp, buf, size - 1);
-	if (res == -1) return -errno;
-	buf[res] = '\0';
-	return 0;
+	acfs_op_dirfd(path, fn, dir_fd);
+	int res = readlinkat(dir_fd, fn, buf, size - 1);
+	if (res == -1) res = -errno;
+	else { buf[res] = '\0'; res = 0; }
+	close(dir_fd);
+	return res;
 }
 
 static int acfs_op_mknod(const char *path, mode_t mode, dev_t rdev) {
-	acfs_op_path_rel(path, rp);
-	if (S_ISFIFO(mode)) acfs_op_return(mkfifoat(acfs_mp.fd, rp, mode));
-	acfs_op_return(mknodat(acfs_mp.fd, rp, mode, rdev)); }
+	acfs_op_dirfd(path, fn, dir_fd);
+	if (S_ISFIFO(mode)) { acfs_op_return_dirfd(dir_fd, mkfifoat(dir_fd, fn, mode)); }
+	acfs_op_return_dirfd(dir_fd, mknodat(dir_fd, fn, mode, rdev)); }
 
 static int acfs_op_mkdir(const char *path, mode_t mode) {
-	acfs_op_path_rel(path, rp);
-	acfs_op_return(mkdirat(acfs_mp.fd, rp, mode)); }
+	acfs_op_dirfd(path, fn, dir_fd);
+	acfs_op_return_dirfd(dir_fd, mkdirat(dir_fd, fn, mode)); }
 
 static int acfs_op_unlink(const char *path) {
-	acfs_op_path_rel(path, rp);
-	acfs_op_return(unlinkat(acfs_mp.fd, rp, 0)); }
+	acfs_op_dirfd(path, fn, dir_fd);
+	acfs_op_return_dirfd(dir_fd, unlinkat(dir_fd, fn, 0)); }
 
 static int acfs_op_rmdir(const char *path) {
-	acfs_op_path_rel(path, rp);
-	acfs_op_return(unlinkat(acfs_mp.fd, rp, AT_REMOVEDIR)); }
+	acfs_op_dirfd(path, fn, dir_fd);
+	acfs_op_return_dirfd(dir_fd, unlinkat(dir_fd, fn, AT_REMOVEDIR)); }
 
 static int acfs_op_symlink(const char *from, const char *to) {
-	acfs_op_path_rel(to, rp);
-	acfs_op_return(symlinkat(from, acfs_mp.fd, rp)); }
+	acfs_op_dirfd(to, fn, dir_fd);
+	acfs_op_return_dirfd(dir_fd, symlinkat(from, dir_fd, fn)); }
 
 static int acfs_op_rename(const char *from, const char *to, unsigned int flags) {
-	acfs_op_path_rel(from, rp_from); acfs_op_path_rel(to, rp_to);
-	acfs_op_return(renameat2(acfs_mp.fd, rp_from, acfs_mp.fd, rp_to, flags)); }
+	acfs_op_dirfd_nocheck(from, fn_from, dir_fd_from);
+	if (dir_fd_from < 0) return dir_fd_from;
+	acfs_op_dirfd_nocheck(to, fn_to, dir_fd_to);
+	if (dir_fd_to < 0) { close(dir_fd_from); return dir_fd_to; }
+	int res = renameat2(dir_fd_from, fn_from, dir_fd_to, fn_to, flags);
+	res = res == -1 ? -errno : 0; close(dir_fd_from); close(dir_fd_to); return res;
+}
 
 static int acfs_op_link(const char *from, const char *to) {
-	acfs_op_path_rel(from, rp_from); acfs_op_path_rel(to, rp_to);
-	acfs_op_return(linkat(acfs_mp.fd, rp_from, acfs_mp.fd, rp_to, AT_SYMLINK_FOLLOW)); }
+	acfs_op_dirfd_nocheck(from, fn_from, dir_fd_from);
+	if (dir_fd_from < 0) return dir_fd_from;
+	acfs_op_dirfd_nocheck(to, fn_to, dir_fd_to);
+	if (dir_fd_to < 0) { close(dir_fd_from); return dir_fd_to; }
+	int res = linkat(dir_fd_from, fn_from, dir_fd_to, fn_to, AT_SYMLINK_FOLLOW);
+	res = res == -1 ? -errno : 0; close(dir_fd_from); close(dir_fd_to); return res; }
 
 static int acfs_op_chmod(const char *path, mode_t mode, struct fuse_file_info *fi) {
 	if (fi) acfs_op_return(fchmod(fi->fh, mode));
-	acfs_op_path_rel(path, rp);
-	acfs_op_return(fchmodat(acfs_mp.fd, rp, mode, 0)); }
+	acfs_op_dirfd(path, fn, dir_fd);
+	acfs_op_return_dirfd(dir_fd, fchmodat(dir_fd, fn, mode, AT_SYMLINK_NOFOLLOW)); }
 
 static int acfs_op_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi) {
 	if (fi) acfs_op_return(fchown(fi->fh, uid, gid));
-	acfs_op_path_rel(path, rp);
-	acfs_op_return(fchownat(acfs_mp.fd, rp, uid, gid, AT_SYMLINK_NOFOLLOW)); }
+	acfs_op_dirfd(path, fn, dir_fd);
+	acfs_op_return_dirfd(dir_fd, fchownat(dir_fd, fn, uid, gid, AT_SYMLINK_NOFOLLOW)); }
 
 static int acfs_op_truncate(const char *path, off_t size, struct fuse_file_info *fi) {
 	if (fi) acfs_op_return(ftruncate(fi->fh, size));
@@ -350,8 +372,9 @@ static int acfs_op_releasedir(const char *path, struct fuse_file_info *fi) {
 }
 
 static int acfs_op_access(const char *path, int mask) {
-	acfs_op_path_rel(path, rp);
-	acfs_op_return(faccessat(acfs_mp.fd, rp, mask, AT_EACCESS)); }
+	acfs_op_dirfd(path, fn, dir_fd);
+	acfs_op_return_dirfd( dir_fd,
+		faccessat(dir_fd, fn, mask, AT_EACCESS | AT_SYMLINK_NOFOLLOW) ); }
 
 static int acfs_op_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
 	acfs_op_path_rel(path, rp);
@@ -364,8 +387,9 @@ static int acfs_op_create(const char *path, mode_t mode, struct fuse_file_info *
 static int acfs_op_utimens( const char *path,
 		const struct timespec ts[2], struct fuse_file_info *fi ) {
 	if (fi) acfs_op_return(futimens(fi->fh, ts));
-	acfs_op_path_rel(path, rp);
-	acfs_op_return(utimensat(acfs_mp.fd, rp, ts, AT_SYMLINK_NOFOLLOW));
+	acfs_op_dirfd(path, fn, dir_fd);
+	acfs_op_return_dirfd( dir_fd,
+		utimensat(dir_fd, fn, ts, AT_SYMLINK_NOFOLLOW) );
 }
 
 static int acfs_op_write_buf( const char *path,
@@ -578,16 +602,16 @@ static int acfs_opt_proc(void *data, const char *arg, int key, struct fuse_args 
 			fuse_opt_add_arg(args, "-h");
 			fuse_main(args->argc, args->argv, &acfs_ops, NULL);
 			printf(
-"\nACFS filesystem-specific options (usable as `-o <opt>=<value>` in mount/fstab):\n"
+"\nACFS filesystem-specific options (usable as `-o <opt>=<value>` in mount/fstab):\n\n"
 "    -u <percentage>   --usage-limit=<percentage>\n"
-"       Used space percentage threshold to cleanup mounted directory. Default: %d%%\n"
+"       Used space percentage threshold to cleanup mounted directory to. Default: %d%%\n\n"
 "    -U <percentage>   --usage-lwm=<percentage>\n"
 "       Used-space%% to cleanup down to after it reaches usage-limit.\n"
-"       Default: %d%% under usage-limit, unless specified with this option.\n"
+"       Default: %d%% under usage-limit, unless specified with this option.\n\n"
 "    --cleanup-dir=<path>\n"
-"       Directory to lookup for files to remove. Default is to use mounted dir.\n"
+"       Directory to lookup for files to remove. Default is to use whole mounted dir.\n"
 "       Path can either be absolute or relative to the mounted dir, must be on same fs.\n"
-"       Symlinks in this dir are also only navigated within filesystem.\n"
+"       Symlinks/mountpoints under this dir are not traversed in any way.\n\n"
 "    --cleanup-buff-sz=<n>\n"
 "       How many oldest-mtime cleanup-candidate files to find in one cleanup-dir scan.\n"
 "       Should be set above typical number of files to remove to get disk usage from\n"

@@ -11,7 +11,7 @@ threshold, keeps removing files until it's below that, in oldest-mtime-first ord
 Different from original limit-fs in simplified project structure
 (just .c + makefile), removed old fuse2 compatibility (and similar macros),
 smarter queue-based cleanup with more control over where it happens
-(`cleanup-dir` option), and a ton of general fixes.
+(`cleanup-dir` option), safer path traversals, and a ton of general fixes.
 
 [limit-fs]: https://github.com/piuma/limit-fs
 
@@ -27,7 +27,8 @@ Repository URLs:
 Requires [libfuse3] (modern FUSE library) to build and run,
 plus the usual C compiler and [make] for the build.
 
-Run `make` to build `acfs` binary, that's it.\
+Run `make` to build `acfs` binary (~35K), that's it.
+
 Or without `make`: `gcc -I/usr/include/fuse3 -lfuse3 -Wall -O2 -o acfs acfs.c && strip acfs`
 
 [libfuse3]: https://github.com/libfuse/libfuse
@@ -88,17 +89,21 @@ where proxying syscalls in a direct way isn't sufficient for correctness.
 Layering this over multi-user network fs might also have issues with remote
 posix locks (if used), as those are mountpoint-local here.
 
-Implementation of path traversals on mounted dir is definitely insecure,
-so do not use this overlay unless that directory is only accessible to trusted
-users/processes, only run it with dedicated least-privileged uid/gid,
-maybe in an LSM profile (to easily restrict access to one path), and ideally with
-symlinks/submounts/special-nodes/etc blocked on underlying filesystem entirely.
+Path traversals on mounted dir should be reasonably safe against odd
+symlinks/mountpoints, using openat2() with RESOLVE\_NO\_SYMLINKS for
+wrapping all path accesses there.
+Because of this, linux 5.6+ is required to run the binary.
+Code also uses [glibc-specific GNU_SOURCE extenstions],
+so is unlikely to build with other libc implementations.
 
 > Specific use-case I have for this is an opportunistic "grab as many new files
 > from here as possible" rsync-backup script for unimportant media files,
 > without having to worry about space available for important things next to them,
 > or whether those extra files all fit there in any way, but also without leaving
 > wasted free space around at the same time.
+
+[glibc-specific GNU_SOURCE extenstions]:
+  https://man.archlinux.org/man/feature_test_macros.7
 
 
 # Links
