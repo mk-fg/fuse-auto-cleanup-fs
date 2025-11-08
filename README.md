@@ -24,13 +24,14 @@ Repository URLs:
 
 # Build / Requirements
 
-Requires [libfuse3] (modern FUSE library) to build and run,
+Requires [glibc] and [libfuse3] (modern FUSE library) to run,
 plus the usual C compiler and [make] for the build.
 
 Run `make` to build `acfs` binary (~35K), that's it.
 
 Or without `make`: `gcc -I/usr/include/fuse3 -lfuse3 -Wall -O2 -o acfs acfs.c && strip acfs`
 
+[glibc]: https://www.gnu.org/software/libc
 [libfuse3]: https://github.com/libfuse/libfuse
 [make]: https://www.gnu.org/software/make
 

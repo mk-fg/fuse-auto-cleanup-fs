@@ -132,8 +132,9 @@ static int acfs_cleanup() {
 		acfs_clean.buff = calloc(acfs_clean.buff_hwm, sizeof(struct acfs_rmfile));
 		if (!acfs_clean.buff) return -ENOMEM; }
 
+	if (pthread_mutex_lock(&acfs_clean.mutex)) return -errno;
+	du = acfs_cleanup_du();
 	while (du > acfs_opts.usage_lwm) {
-		if (pthread_mutex_lock(&acfs_clean.mutex)) return -errno;
 		int n = 0;
 		acfs_clean.prefixlen = strlen(acfs_clean.path);
 		acfs_clean.buff_n = 0; acfs_clean.buff_sorted = false;
@@ -171,9 +172,9 @@ static int acfs_cleanup() {
 		for (; n < acfs_clean.buff_n; n++) free(acfs_clean.buff[n].fn);
 
 		skip:
-		if (pthread_mutex_unlock(&acfs_clean.mutex)) return -errno;
 		if (!acfs_clean.buff_n) { acfs_log("cleanup: no files found"); break; }
 		if ((res = res ? res : du < 0 ? du : res)) break; }
+	if (pthread_mutex_unlock(&acfs_clean.mutex)) return -errno;
 	return res;
 }
 
@@ -206,7 +207,7 @@ static int acfs_op_readlink(const char *path, char *buf, size_t size) {
 	acfs_op_dirfd(path, fn, dir_fd);
 	int res = readlinkat(dir_fd, fn, buf, size - 1);
 	if (res == -1) res = -errno;
-	else { buf[res] = '\0'; res = 0; }
+	else { buf[res] = 0; res = 0; }
 	close(dir_fd);
 	return res;
 }
