@@ -123,17 +123,19 @@ static int acfs_cleanup_du() {
 	return 100 - (st.f_bavail * 100 / st.f_blocks); }
 
 static int acfs_cleanup() {
-	int du, res = 0;
-	if ((du = acfs_cleanup_du()) < 0) return du;
-	if (du < acfs_opts.usage_hwm) return res;
+	// trylock is to block only one close() call by cleanup
+	if (pthread_mutex_trylock(&acfs_clean.mutex))
+		return errno == EBUSY ? 0 : -errno;
+
+	int res = 0, du = acfs_cleanup_du();
+	if (du < 0) res = du;
+	else if (du < acfs_opts.usage_hwm) du = 0;
 
 	if (!acfs_clean.buff) {
 		acfs_clean.buff_hwm = 3 * acfs_opts.cleanup_buff_sz / 2;
 		acfs_clean.buff = calloc(acfs_clean.buff_hwm, sizeof(struct acfs_rmfile));
-		if (!acfs_clean.buff) return -ENOMEM; }
+		if (!acfs_clean.buff) { du = 0; res = -ENOMEM; } }
 
-	if (pthread_mutex_lock(&acfs_clean.mutex)) return -errno;
-	du = acfs_cleanup_du();
 	while (du > acfs_opts.usage_lwm) {
 		int n = 0;
 		acfs_clean.prefixlen = strlen(acfs_clean.path);
@@ -174,6 +176,7 @@ static int acfs_cleanup() {
 		skip:
 		if (!acfs_clean.buff_n) { acfs_log("cleanup: no files found"); break; }
 		if ((res = res ? res : du < 0 ? du : res)) break; }
+
 	if (pthread_mutex_unlock(&acfs_clean.mutex)) return -errno;
 	return res;
 }
