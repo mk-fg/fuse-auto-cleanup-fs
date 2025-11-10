@@ -94,9 +94,9 @@ static int acfs_cleanup_cb( const char *fpath,
 	// Keeps 1*sz in buff qsort'ed, and up to .5*sz tail for entries with ts < buff[sz].ts
 	// Sorts when buffer fills-up, discarding tail entries after buff[sz] (with newest ts)
 	struct acfs_rmfile *rmf = acfs_clean.buff_sorted ?
-		acfs_clean.buff + acfs_opts.cleanup_buff_sz : NULL;
+		acfs_clean.buff + acfs_opts.cleanup_buff_sz - 1 : NULL;
 	time_t ts_last = rmf ? rmf->ts : 0;
-	if (ts_last && ts_last <= sb->st_mtime) goto end;
+	if (ts_last && ts_last < sb->st_mtime) goto end;
 	// Sanity-checks that returned path is absolute one starting with acfs_clean.path,
 	//   but assumes there won't be a double-slash or /../ returned by nftw() after that.
 	if (strncmp(fpath, acfs_clean.path, acfs_clean.prefixlen)) goto end;
