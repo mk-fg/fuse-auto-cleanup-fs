@@ -571,33 +571,20 @@ char *fuse_mnt_resolve_path(const char *progname, const char *orig) {
 }
 
 
-#define ACFS_OPT(t, p) { t, offsetof(struct acfs_opts, p), 1 }
-enum { ACFS_KEY_HELP, ACFS_KEY_VERSION };
+#define ACFS_OPT(opt, key) {opt, offsetof(struct acfs_opts, key), 1}
+#define ACFS_LONG_OPT(opt, type, key) ACFS_OPT(opt "=" type, key), \
+	ACFS_OPT("--" opt " " type, key), ACFS_OPT("--" opt "=" type, key)
+
+enum { ACFS_KEY_HELP, ACFS_KEY_VER };
 static const struct fuse_opt option_spec[] = {
-	ACFS_OPT("usage-limit=%d", usage_hwm),
-	ACFS_OPT("-u %d", usage_hwm),
-	ACFS_OPT("-u=%d", usage_hwm),
-	ACFS_OPT("--usage-limit %d", usage_hwm),
-	ACFS_OPT("--usage-limit=%d", usage_hwm),
-
-	ACFS_OPT("usage-lwm=%d", usage_lwm),
-	ACFS_OPT("-U %d", usage_lwm),
-	ACFS_OPT("-U=%d", usage_lwm),
-	ACFS_OPT("--usage-lwm %d", usage_lwm),
-	ACFS_OPT("--usage-lwm=%d", usage_lwm),
-
-	ACFS_OPT("cleanup-dir=%s", cleanup_dir),
-	ACFS_OPT("--cleanup-dir %s", cleanup_dir),
-	ACFS_OPT("--cleanup-dir=%s", cleanup_dir),
-
-	ACFS_OPT("cleanup-buff-sz=%d", cleanup_buff_sz),
-	ACFS_OPT("--cleanup-buff-sz %d", cleanup_buff_sz),
-	ACFS_OPT("--cleanup-buff-sz=%d", cleanup_buff_sz),
-
-	FUSE_OPT_KEY("-V", ACFS_KEY_VERSION),
-	FUSE_OPT_KEY("--version", ACFS_KEY_VERSION),
-	FUSE_OPT_KEY("-h", ACFS_KEY_HELP),
-	FUSE_OPT_KEY("--help", ACFS_KEY_HELP),
+	ACFS_LONG_OPT("usage-limit", "%d", usage_hwm),
+	ACFS_OPT("-u %d", usage_hwm), ACFS_OPT("-u=%d", usage_hwm),
+	ACFS_LONG_OPT("usage-lwm", "%d", usage_lwm),
+	ACFS_OPT("-U %d", usage_lwm), ACFS_OPT("-U=%d", usage_lwm),
+	ACFS_LONG_OPT("cleanup-dir", "%s", cleanup_dir),
+	ACFS_LONG_OPT("cleanup-buff-sz", "%d", cleanup_buff_sz),
+	FUSE_OPT_KEY("-V", ACFS_KEY_VER), FUSE_OPT_KEY("--version", ACFS_KEY_VER),
+	FUSE_OPT_KEY("-h", ACFS_KEY_HELP), FUSE_OPT_KEY("--help", ACFS_KEY_HELP),
 	FUSE_OPT_END };
 
 static int acfs_opt_proc(void *data, const char *arg, int key, struct fuse_args *args) {
@@ -622,7 +609,7 @@ static int acfs_opt_proc(void *data, const char *arg, int key, struct fuse_args 
 "        usage-limit%% down to usage-lwm%%, depending on average file sizes. Default: %d\n\n",
 				acfs_opts_def_usage_hwm, acfs_opts_def_usage_lwm_diff, acfs_opts_def_cbuff_sz );
 			exit(1);
-		case ACFS_KEY_VERSION:
+		case ACFS_KEY_VER:
 			printf("acfs version %s\n", ACFS_VERSION);
 			fuse_opt_add_arg(args, "--version");
 			fuse_main(args->argc, args->argv, &acfs_ops, NULL);
