@@ -203,8 +203,7 @@ static int acfs_cleanup() {
 static int acfs_op_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi) {
 	if (fi) acfs_op_return(fstat(fi->fh, stbuf));
 	acfs_op_dirfd(path, fn, dir_fd);
-	acfs_op_return_dirfd(dir_fd, fstatat(dir_fd, fn, stbuf, AT_SYMLINK_NOFOLLOW));
-}
+	acfs_op_return_dirfd(dir_fd, fstatat(dir_fd, fn, stbuf, AT_SYMLINK_NOFOLLOW)); }
 
 static int acfs_op_readlink(const char *path, char *buf, size_t size) {
 	acfs_op_dirfd(path, fn, dir_fd);
@@ -212,8 +211,7 @@ static int acfs_op_readlink(const char *path, char *buf, size_t size) {
 	if (res == -1) res = -errno;
 	else { buf[res] = 0; res = 0; }
 	close(dir_fd);
-	return res;
-}
+	return res; }
 
 static int acfs_op_mknod(const char *path, mode_t mode, dev_t rdev) {
 	acfs_op_dirfd(path, fn, dir_fd);
@@ -242,8 +240,7 @@ static int acfs_op_rename(const char *from, const char *to, unsigned int flags) 
 	acfs_op_dirfd_nocheck(to, fn_to, dir_fd_to);
 	if (dir_fd_to < 0) { close(dir_fd_from); return dir_fd_to; }
 	int res = renameat2(dir_fd_from, fn_from, dir_fd_to, fn_to, flags);
-	res = res == -1 ? -errno : 0; close(dir_fd_from); close(dir_fd_to); return res;
-}
+	res = res == -1 ? -errno : 0; close(dir_fd_from); close(dir_fd_to); return res; }
 
 static int acfs_op_link(const char *from, const char *to) {
 	acfs_op_dirfd_nocheck(from, fn_from, dir_fd_from);
@@ -268,8 +265,7 @@ static int acfs_op_truncate(const char *path, off_t size, struct fuse_file_info 
 	acfs_op_path_rel(path, rp);
 	int fd = acfs_open(acfs_mp.fd, rp, O_WRONLY);
 	if (fd < 0) return -errno;
-	int res = ftruncate(fd, size); close(fd); return res;
-}
+	int res = ftruncate(fd, size); close(fd); return res; }
 
 static int acfs_op_open(const char *path, struct fuse_file_info *fi) {
 	acfs_op_path_rel(path, rp);
@@ -279,8 +275,7 @@ static int acfs_op_open(const char *path, struct fuse_file_info *fi) {
 		fi->direct_io = 1;
 		fi->parallel_direct_writes = 1; }
 	fi->fh = fd;
-	return 0;
-}
+	return 0; }
 
 static int acfs_op_read( const char *path, char *buf,
 		size_t size, off_t offset, struct fuse_file_info *fi ) {
@@ -299,26 +294,25 @@ static int acfs_op_release(const char *path, struct fuse_file_info *fi) {
 	int res = 0;
 	if (close(fi->fh) == -1) res = -errno;
 	if (!res) res = acfs_cleanup();
-	return res;
-}
+	return res; }
 
 static int acfs_op_fsync(const char *path, int isdatasync, struct fuse_file_info *fi) {
 	if (isdatasync) acfs_op_return(fdatasync(fi->fh));
 	acfs_op_return(fsync(fi->fh)); }
 
-#define acfs_op_return_fd(path, flags, op) \
+#define acfs_op_return_fd(path, op) \
 	acfs_op_path_rel(path, rp); \
 	int fd = acfs_open(acfs_mp.fd, rp, O_RDONLY); if (fd < 0) return -errno; \
 	int res = (int) op == -1 ? -errno : 0; close(fd); return res;
 static int acfs_op_setxattr(const char *path,
 		const char *name, const char *value, size_t size, int flags) {
-	acfs_op_return_fd(path, 0, fsetxattr(fd, name, value, size, flags)); }
+	acfs_op_return_fd(path, fsetxattr(fd, name, value, size, flags)); }
 static int acfs_op_getxattr(const char *path, const char *name, char *value, size_t size) {
-	acfs_op_return_fd(path, 0, fgetxattr(fd, name, value, size)); }
+	acfs_op_return_fd(path, fgetxattr(fd, name, value, size)); }
 static int acfs_op_listxattr(const char *path, char *list, size_t size) {
-	acfs_op_return_fd(path, 0, flistxattr(fd, list, size)); }
+	acfs_op_return_fd(path, flistxattr(fd, list, size)); }
 static int acfs_op_removexattr(const char *path, const char *name) {
-	acfs_op_return_fd(path, 0, fremovexattr(fd, name)); }
+	acfs_op_return_fd(path, fremovexattr(fd, name)); }
 
 static int acfs_op_opendir(const char *path, struct fuse_file_info *fi) {
 	int res;
@@ -372,8 +366,7 @@ static int acfs_op_releasedir(const char *path, struct fuse_file_info *fi) {
 	if (d->dp == acfs_mp.dir->dp) return 0;
 	closedir(d->dp);
 	free(d);
-	return 0;
-}
+	return 0; }
 
 static int acfs_op_access(const char *path, int mask) {
 	acfs_op_dirfd(path, fn, dir_fd);
@@ -385,16 +378,14 @@ static int acfs_op_create(const char *path, mode_t mode, struct fuse_file_info *
 	int fd = acfs_open_mode(acfs_mp.fd, rp, fi->flags, mode);
 	if (fd == -1) return -errno;
 	fi->fh = fd;
-	return 0;
-}
+	return 0; }
 
 static int acfs_op_utimens( const char *path,
 		const struct timespec ts[2], struct fuse_file_info *fi ) {
 	if (fi) acfs_op_return(futimens(fi->fh, ts));
 	acfs_op_dirfd(path, fn, dir_fd);
 	acfs_op_return_dirfd( dir_fd,
-		utimensat(dir_fd, fn, ts, AT_SYMLINK_NOFOLLOW) );
-}
+		utimensat(dir_fd, fn, ts, AT_SYMLINK_NOFOLLOW) ); }
 
 static int acfs_op_write_buf( const char *path,
 		struct fuse_bufvec *buf, off_t offset, struct fuse_file_info *fi ) {
@@ -402,8 +393,7 @@ static int acfs_op_write_buf( const char *path,
 	dst.buf[0].flags = FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK;
 	dst.buf[0].fd = fi->fh;
 	dst.buf[0].pos = offset;
-	return fuse_buf_copy(&dst, buf, FUSE_BUF_SPLICE_NONBLOCK);
-}
+	return fuse_buf_copy(&dst, buf, FUSE_BUF_SPLICE_NONBLOCK); }
 
 static int acfs_op_read_buf( const char *path,
 		struct fuse_bufvec **bufp, size_t size, off_t offset, struct fuse_file_info *fi ) {
@@ -414,8 +404,7 @@ static int acfs_op_read_buf( const char *path,
 	src->buf[0].fd = fi->fh;
 	src->buf[0].pos = offset;
 	*bufp = src;
-	return 0;
-}
+	return 0; }
 
 static int acfs_op_flock( const char *path,
 	struct fuse_file_info *fi, int op ) { acfs_op_return(flock(fi->fh, op)); }
